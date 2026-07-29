@@ -8,3 +8,4 @@ server.pid
 *.log
 *-audit.json
 .vscode/
+tmp/

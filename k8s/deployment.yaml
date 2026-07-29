@@ -1,0 +1,106 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: biovalidator
+  namespace: biovalidator-placeholder
+  labels:
+    app.kubernetes.io/name: biovalidator
+    app.kubernetes.io/component: validator
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: biovalidator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: biovalidator
+        app.kubernetes.io/component: validator
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      
+      # EBI must replace this public-safe node-selector key and value.
+      nodeSelector:
+        ebi.example.invalid/network-zone: internal-placeholder
+      imagePullSecrets:
+        - name: biovalidator-registry-placeholder
+      containers:
+        - name: biovalidator
+          image: registry.example.invalid/ebi/biovalidator:main-01234567
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - name: http
+              containerPort: 3020
+              protocol: TCP
+          env:
+
+            # EBI must confirm this base path before deployment.
+            - name: BIOVALIDATOR_BASE_URL
+              value: /biosamples/biovalidator
+            - name: BIOVALIDATOR_PORT
+              value: "3020"
+            - name: BIOVALIDATOR_WORKERS
+              value: "1"
+            - name: BIOVALIDATOR_CACHE_ENDPOINT_ENABLED
+              value: "false"
+            - name: BIOVALIDATOR_LOG_DIR
+              value: /tmp/biovalidator/logs
+            - name: BIOVALIDATOR_PID_PATH
+              value: /tmp/biovalidator/server.pid
+          
+          # Optional. Create this ConfigMap with proxy environment keys only
+          # when the EBI cluster requires an outbound proxy.
+          envFrom:
+            - configMapRef:
+                name: biovalidator-proxy-placeholder
+                optional: true
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+          startupProbe:
+            httpGet:
+              path: /biosamples/biovalidator/health
+              port: http
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /biosamples/biovalidator/health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /biosamples/biovalidator/health
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 2
+            failureThreshold: 3
+          volumeMounts:
+            - name: runtime-data
+              mountPath: /tmp/biovalidator
+      volumes:
+        - name: runtime-data
+          emptyDir: {}

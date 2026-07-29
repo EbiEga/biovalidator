@@ -22,6 +22,11 @@ The default base URL is `http://localhost:3020/`. `BIOVALIDATOR_BASE_URL` may ad
 
 `DELETE /cache` clears transient schema and/or API caches. Registered local schemas remain available because they are server configuration rather than cache entries.
 
+The cache endpoints are enabled by default for compatibility with existing
+local deployments. Set `BIOVALIDATOR_CACHE_ENDPOINT_ENABLED=false` at process
+startup to leave both `GET /cache` and `DELETE /cache` unregistered; requests
+then receive `404`.
+
 ## Health
 
 `GET /health` returns `200` when the process can serve the request. It does not probe OLS, ENA Taxonomy, identifiers.org, or other upstream services. Counters and cache history reset when the process restarts and are not aggregated across replicas.

@@ -12,6 +12,10 @@ The browser UI uses a per-response CSP nonce for CodeMirror's runtime-generated 
 
 Use repeatable `--remoteRef URL` arguments to fetch and compile important allowlisted schemas before the HTTP listener starts. This warms the shared response cache. Local schemas supplied with `--ref` are loaded and registered at startup and remain available through their `$id`.
 
+## Cache endpoint exposure
+
+`GET /cache` includes schema identifiers and a bounded remote URL inventory, and `DELETE /cache` changes process-wide transient cache state. They remain enabled by default for compatibility with local deployments. Public deployments should either hide these behind authorisation or set `BIOVALIDATOR_CACHE_ENDPOINT_ENABLED=false`. Disabling them removes both routes while keeping `/health` available.
+
 ## Default limits
 
 | Environment variable | Default | Purpose |
@@ -71,4 +75,4 @@ Typical status codes are `413` for an oversized request body, `422` for a schema
 ## Deployment notes
 
 - We still don't have an ingress/reverse-proxy connection and request-rate policy in front of a public server deployment. Application worker and queue bounds protect validation capacity, but they do not replace edge rate limiting. In other words, people can still abuse the public servers in other ways.
-- At some point we will restrict `/cache` if its URL inventory is considered operationally sensitive.
+- Disable `/cache` on public deployments unless its operational inventory and cache-clearing action are intentionally exposed.

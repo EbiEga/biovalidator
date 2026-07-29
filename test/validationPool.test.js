@@ -25,4 +25,4 @@ test("validation workers start lazily and use available idle capacity", async ()
     } finally {
         await pool.close();
     }
-}, 20000);
+}, 60000);

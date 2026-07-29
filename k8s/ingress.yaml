@@ -1,0 +1,24 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: biovalidator
+  namespace: biovalidator-placeholder
+  annotations:
+  
+    # EBI must confirm the ingress class and forwarded-header policy.
+    kubernetes.io/ingress.class: nginx-placeholder
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_input_headers "X-Forwarded-Proto: https";
+      more_set_input_headers "X-Forwarded-Port: 443";
+spec:
+  rules:
+    - host: biovalidator.example.invalid
+      http:
+        paths:
+          - path: /biosamples/biovalidator
+            pathType: Prefix
+            backend:
+              service:
+                name: biovalidator
+                port:
+                  number: 80
