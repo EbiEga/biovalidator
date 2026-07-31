@@ -46,6 +46,6 @@ authors:
   orcid: "https://orcid.org/0000-0002-7747-6256"
 title: "ELIXIR Biovalidator: maintained fork for semantic validation of life science metadata"
 version: 2.2.2
-url: "https://github.com/M-casado/biovalidator"
-repository-code: "https://github.com/M-casado/biovalidator"
+url: "https://github.com/EbiEga/biovalidator"
+repository-code: "https://github.com/EbiEga/biovalidator"
 license: Apache-2.0

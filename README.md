@@ -3,8 +3,8 @@
 
 **Extended JSON Schema validation with ontology support**
 
-[![CI](https://github.com/M-casado/biovalidator/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/M-casado/biovalidator/actions/workflows/ci.yml)
-[![License: Apache-2.0](https://img.shields.io/github/license/M-casado/biovalidator)](LICENSE.md)
+[![CI](https://github.com/EbiEga/biovalidator/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/EbiEga/biovalidator/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/github/license/EbiEga/biovalidator)](LICENSE.md)
 
 ELIXIR biovalidator is a [JSON Schema](http://json-schema.org/) validator extended from popular javascript library [AJV](https://ajv.js.org/). 
 In addition to standard JSON Schema validation, the biovalidator covers many validation use cases related life sciences, including ontology validation and taxonomy validation. 
@@ -69,7 +69,7 @@ npm -v
 ```
 - Clone project and install dependencies:
 ```
-git clone https://github.com/M-casado/biovalidator.git
+git clone https://github.com/EbiEga/biovalidator.git
 cd biovalidator
 npm install
 ```
