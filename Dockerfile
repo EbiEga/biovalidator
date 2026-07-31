@@ -1,18 +1,43 @@
-FROM node:22-bookworm
+FROM node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 AS build
 
-# Create app directory
 WORKDIR /usr/src/app
 
-COPY . .
-COPY ./start.sh /
+COPY package.json package-lock.json ./
+RUN npm ci
 
-# Rebuild the checked-in browser assets in the Linux image, then remove the
-# build-only dependencies so they do not add weight to the runtime image.
-RUN npm ci && npm run build:ui && npm prune --omit=dev
+COPY scripts ./scripts
+COPY src ./src
+COPY media ./media
 
-ENV BIOVALIDATOR_LOG_DIR=/tmp/biovalidator/logs \
+RUN npm run build:ui \
+    && npm prune --omit=dev
+
+FROM node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 AS runtime
+
+ARG REVISION=unknown
+
+LABEL org.opencontainers.image.source="https://github.com/EbiEga/biovalidator" \
+      org.opencontainers.image.revision="${REVISION}" \
+      org.opencontainers.image.title="Biovalidator"
+
+WORKDIR /usr/src/app
+
+COPY --from=build --chown=node:node /usr/src/app/package.json ./package.json
+COPY --from=build --chown=node:node /usr/src/app/node_modules ./node_modules
+COPY --from=build --chown=node:node /usr/src/app/src/biovalidator.js ./src/biovalidator.js
+COPY --from=build --chown=node:node /usr/src/app/src/core ./src/core
+COPY --from=build --chown=node:node /usr/src/app/src/keywords ./src/keywords
+COPY --from=build --chown=node:node /usr/src/app/src/model ./src/model
+COPY --from=build --chown=node:node /usr/src/app/src/utils ./src/utils
+COPY --from=build --chown=node:node /usr/src/app/src/views ./src/views
+
+ENV NODE_ENV=production \
+    BIOVALIDATOR_PORT=3020 \
+    BIOVALIDATOR_LOG_DIR=/tmp/biovalidator/logs \
     BIOVALIDATOR_PID_PATH=/tmp/biovalidator/server.pid
 
 USER node
 
-ENTRYPOINT ["/start.sh"]
+EXPOSE 3020
+
+ENTRYPOINT ["node", "src/biovalidator.js"]

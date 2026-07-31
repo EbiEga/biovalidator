@@ -13,7 +13,12 @@ const {
 } = require('../src/keywords/shared-cache');
 
 const BioValidatorServer = require('../src/core/server');
-const {resolveDeploymentMetadata, resolveDependencyVersions} = BioValidatorServer;
+const {
+  resolveDeploymentMetadata,
+  resolveDependencyVersions,
+  isCacheEndpointEnabled,
+  SHUTDOWN_SIGNALS
+} = BioValidatorServer;
 const supertest = require('supertest');
 const {loadSecurityConfig} = require('../src/utils/security-config');
 const server = new BioValidatorServer("3020", "");
@@ -414,6 +419,20 @@ describe('biovalidator server endpoints', () => {
     expect(res.body.schemas).toEqual({registered: [], validatorID: [], referenced: []});
   });
 
+  it('disables both cache routes without disabling health when configured false', async () => {
+    const disabledServer = new BioValidatorServer("3028", "", {
+      environment: {BIOVALIDATOR_CACHE_ENDPOINT_ENABLED: " FALSE "}
+    });
+    disabledServer._configureServer()._configureEndpoints();
+    const disabledRequest = supertest(disabledServer.app);
+
+    await disabledRequest.get('/cache').expect(404);
+    await disabledRequest.delete('/cache').expect(404);
+    await disabledRequest.get('/health').expect(200);
+    expect(isCacheEndpointEnabled({})).toBe(true);
+    expect(isCacheEndpointEnabled({BIOVALIDATOR_CACHE_ENDPOINT_ENABLED: "true"})).toBe(true);
+  });
+
   it('GET /health returns process, deployment, validation, and cache metrics', async () => {
     const originalDeployedAt = process.env.BIOVALIDATOR_DEPLOYED_AT;
     const originalRevision = process.env.BIOVALIDATOR_REVISION;
@@ -669,4 +688,82 @@ describe('biovalidator server endpoints', () => {
     scopedServer.biovalidator.clearSchemaCaches();
   });
 
+});
+
+describe('biovalidator server shutdown', () => {
+  let removePidSpy;
+
+  beforeEach(() => {
+    removePidSpy = jest.spyOn(npid, 'remove').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    removePidSpy.mockRestore();
+  });
+
+  it('registers SIGTERM, SIGINT, and SIGUSR1 as server-only shutdown hooks', () => {
+    const removeOnExit = jest.fn();
+    const createPidSpy = jest.spyOn(npid, 'create').mockReturnValue({removeOnExit});
+    const onceSpy = jest.spyOn(process, 'once').mockImplementation(() => process);
+    const hookServer = new BioValidatorServer("3029", "");
+
+    try {
+      hookServer._registerHooks();
+
+      expect(createPidSpy).toHaveBeenCalledWith(hookServer.pidPath);
+      expect(removeOnExit).toHaveBeenCalled();
+      expect(onceSpy.mock.calls.map(([signal]) => signal)).toEqual([...SHUTDOWN_SIGNALS]);
+    } finally {
+      hookServer._removeShutdownHooks();
+      onceSpy.mockRestore();
+      createPidSpy.mockRestore();
+    }
+  });
+
+  it('stops HTTP acceptance, closes workers, removes the PID file, and exits successfully once', async () => {
+    const processExit = jest.fn();
+    const validationPool = {close: jest.fn().mockResolvedValue()};
+    const shutdownServer = new BioValidatorServer("3030", "", {
+      validationPool,
+      processExit
+    });
+    let finishHttpClose;
+    shutdownServer.expressServer = {
+      close: jest.fn((callback) => {
+        finishHttpClose = callback;
+      })
+    };
+
+    const firstShutdown = shutdownServer.shutdown("SIGTERM");
+    const repeatedShutdown = shutdownServer.shutdown("SIGINT");
+
+    expect(repeatedShutdown).toBe(firstShutdown);
+    expect(shutdownServer.expressServer.close).toHaveBeenCalledTimes(1);
+    await Promise.resolve();
+    expect(validationPool.close).toHaveBeenCalledTimes(1);
+
+    finishHttpClose();
+    await expect(firstShutdown).resolves.toBe(0);
+    expect(removePidSpy).toHaveBeenCalledWith(shutdownServer.pidPath);
+    expect(processExit).toHaveBeenCalledTimes(1);
+    expect(processExit).toHaveBeenCalledWith(0);
+  });
+
+  it('forces a nonzero exit after the bounded shutdown timeout', async () => {
+    const processExit = jest.fn();
+    const validationPool = {close: jest.fn().mockResolvedValue()};
+    const shutdownServer = new BioValidatorServer("3031", "", {
+      validationPool,
+      processExit,
+      shutdownTimeoutMs: 5
+    });
+    shutdownServer.expressServer = {close: jest.fn()};
+
+    const shutdown = shutdownServer.shutdown("SIGTERM");
+
+    await expect(shutdown).resolves.toBe(1);
+    expect(validationPool.close).toHaveBeenCalledTimes(1);
+    expect(removePidSpy).toHaveBeenCalledWith(shutdownServer.pidPath);
+    expect(processExit).toHaveBeenCalledWith(1);
+  });
 });

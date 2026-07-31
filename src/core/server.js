@@ -19,6 +19,13 @@ const PROCESS_STARTED_AT = new Date(Date.now() - (process.uptime() * 1000)).toIS
 const PROJECT_ROOT = path.resolve(__dirname, "../..");
 const VIEW_ROOT = path.join(__dirname, "..", "views");
 const CSP_NONCE_PLACEHOLDER = "__BIOVALIDATOR_CSP_NONCE__";
+const SHUTDOWN_SIGNALS = Object.freeze(["SIGTERM", "SIGINT", "SIGUSR1"]);
+const SHUTDOWN_TIMEOUT_MS = 25_000;
+
+function isCacheEndpointEnabled(environment = process.env) {
+  const configured = environment.BIOVALIDATOR_CACHE_ENDPOINT_ENABLED;
+  return configured === undefined || String(configured).trim().toLowerCase() !== "false";
+}
 
 /**
  * Resolve the runtime toolchain versions once for the lifetime of the process.
@@ -110,6 +117,11 @@ class BioValidatorServer {
     this.baseUrl = process.env.BIOVALIDATOR_BASE_URL || '/';
     this.logPath = process.env.BIOVALIDATOR_LOG_DIR || './logs';
     this.pidPath = process.env.BIOVALIDATOR_PID_PATH || './server.pid';
+    this.cacheEndpointEnabled = isCacheEndpointEnabled(options.environment || process.env);
+    this.shutdownTimeoutMs = options.shutdownTimeoutMs ?? SHUTDOWN_TIMEOUT_MS;
+    this.processExit = options.processExit || ((code) => process.exit(code));
+    this.shutdownPromise = null;
+    this.shutdownHandlers = new Map();
     this.uiTemplates = Object.freeze({
       index: fs.readFileSync(path.join(VIEW_ROOT, "index.html"), "utf8"),
       editing: fs.readFileSync(path.join(VIEW_ROOT, "index_editing.html"), "utf8")
@@ -356,47 +368,49 @@ class BioValidatorServer {
       });
     });
 
-    this.router.get("/cache", (req, res) => {
-      res.send({
-        schemas: this.biovalidator.getSchemaInventory(),
-        worker_schemas: this.validationPool ? this.validationPool.getSchemaInventory() : undefined,
-        api: getApiCacheDetails(),
-        outbound: this.httpClient.snapshot()
+    if (this.cacheEndpointEnabled) {
+      this.router.get("/cache", (req, res) => {
+        res.send({
+          schemas: this.biovalidator.getSchemaInventory(),
+          worker_schemas: this.validationPool ? this.validationPool.getSchemaInventory() : undefined,
+          api: getApiCacheDetails(),
+          outbound: this.httpClient.snapshot()
+        });
       });
-    });
+
+      this.router.delete("/cache", (req, res) => {
+        const scope = req.query.scope === undefined ? "all" : req.query.scope;
+        const validScopes = new Set(["all", "schemas", "api"]);
+        if (typeof scope !== "string" || !validScopes.has(scope)) {
+          res.status(400).send(new AppError("Invalid cache scope. Expected one of: all, schemas, api."));
+          return;
+        }
+
+        const cleared = [];
+        if (scope === "all" || scope === "schemas") {
+          this.biovalidator.clearSchemaCaches();
+          if (this.validationPool) {
+            this.validationPool.clearSchemaCaches();
+          }
+          this.httpClient.clear("schemas");
+          cleared.push("schemas");
+        }
+        if (scope === "all" || scope === "api") {
+          clearApiCaches();
+          this.httpClient.clear("api");
+          cleared.push("api");
+        }
+
+        res.send({
+          message: "Cache cleared successfully",
+          scope,
+          cleared
+        });
+      });
+    }
 
     this.router.get("/health", (req, res) => {
       res.status(200).send(this._getHealthDetails());
-    });
-
-    this.router.delete("/cache", (req, res) => {
-      const scope = req.query.scope === undefined ? "all" : req.query.scope;
-      const validScopes = new Set(["all", "schemas", "api"]);
-      if (typeof scope !== "string" || !validScopes.has(scope)) {
-        res.status(400).send(new AppError("Invalid cache scope. Expected one of: all, schemas, api."));
-        return;
-      }
-
-      const cleared = [];
-      if (scope === "all" || scope === "schemas") {
-        this.biovalidator.clearSchemaCaches();
-        if (this.validationPool) {
-          this.validationPool.clearSchemaCaches();
-        }
-        this.httpClient.clear("schemas");
-        cleared.push("schemas");
-      }
-      if (scope === "all" || scope === "api") {
-        clearApiCaches();
-        this.httpClient.clear("api");
-        cleared.push("api");
-      }
-
-      res.send({
-        message: "Cache cleared successfully",
-        scope,
-        cleared
-      });
     });
 
     return this;
@@ -462,26 +476,86 @@ class BioValidatorServer {
       }
     }
 
-    // Handles crt + c event
-    process.on("SIGINT", () => {
+    for (const signal of SHUTDOWN_SIGNALS) {
+      const handler = () => this.shutdown(signal);
+      this.shutdownHandlers.set(signal, handler);
+      process.once(signal, handler);
+    }
+  }
+
+  _removeShutdownHooks() {
+    for (const [signal, handler] of this.shutdownHandlers) {
+      process.removeListener(signal, handler);
+    }
+    this.shutdownHandlers.clear();
+  }
+
+  _removePidFile() {
+    try {
       npid.remove(this.pidPath);
-      if (this.validationPool) {
-        this.validationPool.close();
+    } catch (error) {
+      logger.warn(`Failed to remove PID file at ${this.pidPath}: ${error.message || error}`);
+    }
+  }
+
+  shutdown(signal) {
+    if (this.shutdownPromise) {
+      return this.shutdownPromise;
+    }
+
+    logger.info(`Received ${signal}; shutting down Biovalidator.`);
+
+    const closeHttpServer = new Promise((resolve, reject) => {
+      if (!this.expressServer) {
+        resolve();
+        return;
       }
-      process.exit();
+      try {
+        this.expressServer.close((error) => error ? reject(error) : resolve());
+      } catch (error) {
+        reject(error);
+      }
     });
 
-    // Handles kill -USR1 pid event
-    process.on("SIGUSR1", () => {
-      npid.remove(this.pidPath);
-      if (this.validationPool) {
-        this.validationPool.close();
-      }
-      process.exit();
+    const closeValidationPool = this.validationPool
+      ? Promise.resolve().then(() => this.validationPool.close())
+      : Promise.resolve();
+
+    this.shutdownPromise = new Promise((resolve) => {
+      let completed = false;
+      const finish = (exitCode, error) => {
+        if (completed) {
+          return;
+        }
+        completed = true;
+        clearTimeout(forceTimer);
+        this._removeShutdownHooks();
+        this._removePidFile();
+        if (error) {
+          logger.error(`Biovalidator shutdown failed: ${error.message || error}`);
+        } else {
+          logger.info("Biovalidator shutdown completed.");
+        }
+        this.processExit(exitCode);
+        resolve(exitCode);
+      };
+
+      const forceTimer = setTimeout(() => {
+        finish(1, new Error(`Shutdown exceeded ${this.shutdownTimeoutMs}ms; forcing exit.`));
+      }, this.shutdownTimeoutMs);
+
+      Promise.all([closeHttpServer, closeValidationPool])
+        .then(() => finish(0))
+        .catch((error) => finish(1, error));
     });
+
+    return this.shutdownPromise;
   }
 }
 
 module.exports = BioValidatorServer;
 module.exports.resolveDeploymentMetadata = resolveDeploymentMetadata;
 module.exports.resolveDependencyVersions = resolveDependencyVersions;
+module.exports.isCacheEndpointEnabled = isCacheEndpointEnabled;
+module.exports.SHUTDOWN_SIGNALS = SHUTDOWN_SIGNALS;
+module.exports.SHUTDOWN_TIMEOUT_MS = SHUTDOWN_TIMEOUT_MS;

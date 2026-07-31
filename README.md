@@ -3,8 +3,8 @@
 
 **Extended JSON Schema validation with ontology support**
 
-[![CI](https://github.com/M-casado/biovalidator/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/M-casado/biovalidator/actions/workflows/ci.yml)
-[![License: Apache-2.0](https://img.shields.io/github/license/M-casado/biovalidator)](LICENSE.md)
+[![CI](https://github.com/EbiEga/biovalidator/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/EbiEga/biovalidator/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/github/license/EbiEga/biovalidator)](LICENSE.md)
 
 ELIXIR biovalidator is a [JSON Schema](http://json-schema.org/) validator extended from popular javascript library [AJV](https://ajv.js.org/). 
 In addition to standard JSON Schema validation, the biovalidator covers many validation use cases related life sciences, including ontology validation and taxonomy validation. 
@@ -69,7 +69,7 @@ npm -v
 ```
 - Clone project and install dependencies:
 ```
-git clone https://github.com/M-casado/biovalidator.git
+git clone https://github.com/EbiEga/biovalidator.git
 cd biovalidator
 npm install
 ```
@@ -190,6 +190,11 @@ export BIOVALIDATOR_LOG_DIR=./new_log_dir
 ### Interacting with biovalidator cache
 In server mode, Biovalidator caches compiled validators, remotely referenced schemas, and responses from external APIs. Remote/API response caches are shared across users and validation workers, they are not recreated per request. `GET /cache` reports schema inventories, bounded-cache metrics, and remote URL keys without exposing API query keys or cached bodies. `DELETE /cache` clears transient entries and accepts `scope=schemas`, `scope=api`, or `scope=all` (the default). Local schemas registered with `--ref` are configuration and are not removed.
 
+The cache endpoints remain enabled by default. Set
+`BIOVALIDATOR_CACHE_ENDPOINT_ENABLED=false` to make both cache routes return
+`404` while keeping `/health` available. Public deployments should disable the
+cache endpoints unless they are intentionally exposed.
+
 Transient schema and validation API cache entries expire after six hours by default. Set `BIOVALIDATOR_CACHE_TTL_SECONDS` to a positive whole number of seconds to change the lifetime. The setting is read at process startup, so changing it requires a restart. For example, use `3600` for one hour or `86400` for one day. The FEGA examples cache has its own `FEGA_EXAMPLES_CACHE_TTL_SECONDS` setting.
 
 These endpoints are not protected; restrict access as appropriate. See the [HTTP API reference](docs/api.md) for the response fields.
@@ -271,6 +276,7 @@ node src/biovalidator --logDir=/log/directory/path
 - BIOVALIDATOR_PID_PATH
 - BIOVALIDATOR_DEPLOYED_AT
 - BIOVALIDATOR_REVISION
+- BIOVALIDATOR_CACHE_ENDPOINT_ENABLED
 - BIOVALIDATOR_CACHE_TTL_SECONDS
 
 `BIOVALIDATOR_DEPLOYED_AT` and `BIOVALIDATOR_REVISION` override the deployment metadata reported by `/health`. Without them, a local server uses its process start time and the current Git commit when available.

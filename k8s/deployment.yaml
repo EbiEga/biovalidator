@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: biovalidator
+  namespace: biovalidator-dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: biovalidator
+  template:
+    metadata:
+      labels:
+        app: biovalidator
+    spec:
+      containers:
+        - name: biovalidator
+          image: "dockerhub.ebi.ac.uk/ega/biovalidator:main"
+          resources:
+            limits:
+              cpu: "1000m"
+              memory: "2000Mi"
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3020
+          readinessProbe:
+            httpGet:
+              path: /biosamples/biovalidator/health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /biosamples/biovalidator/health
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 2
+            failureThreshold: 3
+      nodeSelector:
+        subnet: internal
+      imagePullSecrets:
+        - name: regcredebi
