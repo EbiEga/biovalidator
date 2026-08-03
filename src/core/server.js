@@ -312,13 +312,13 @@ class BioValidatorServer {
         message: "EGA Biovalidator endpoint: Please use POST method to validate FEGA/EGA metadata JSON against " +
             "a JSON Schema. See Example POST message structure 'example_post_body'. For more information about " +
             "Biovalidator see https://github.com/elixir-europe/biovalidator and for FEGA schemas see " +
-            "https://github.com/M-casado/fega-metadata-schema",
+            "https://github.com/EGA-archive/fega-metadata-schema",
         example_post_body: {
           schema: {
-            "$ref": "https://raw.githubusercontent.com/M-casado/fega-metadata-schema/main/schemas/entities/cohort/schema.json"
+            "$ref": "https://raw.githubusercontent.com/EGA-archive/fega-metadata-schema/dev/schemas/entities/cohort/schema.json"
           },
           data: {
-            "@context": "https://raw.githubusercontent.com/M-casado/fega-metadata-schema/main/schemas/entities/cohort/schema.json",
+            "@context": "https://raw.githubusercontent.com/EGA-archive/fega-metadata-schema/dev/schemas/entities/cohort/schema.json",
             "@type": "ega:cohort",
             "id": "ega:EGAH00000000001",
             "name": "Barcelona adult genomics cohort",

@@ -47,7 +47,7 @@ Use repeatable `--remoteRef URL` arguments to fetch and compile important allowl
 
 All numeric settings must be positive whole numbers and are read at startup. `BIOVALIDATOR_REMOTE_REF_ALLOWLIST` is a comma-separated list of HTTPS URL prefixes. An empty allowlist is rejected because remote resolution is part of the service; use tightly scoped repository prefixes where practical.
 
-These single-document defaults were calibrated using the `fega-metadata-schema` of `M-casado`, multiplying the current sizes 5fold. The aggregate, document-count, depth, and value defaults also leave substantial growth above the measured current FEGA schema closure.
+These single-document defaults were calibrated using the `fega-metadata-schema` of `EGA-archive`, multiplying the current sizes 5fold. The aggregate, document-count, depth, and value defaults also leave substantial growth above the measured current FEGA schema closure.
 
 `BIOVALIDATOR_DISABLE_WORKERS=true` is intended only for trusted local debugging. It removes the worker-enforced 60-second execution boundary and should not be used for a public endpoint.
 

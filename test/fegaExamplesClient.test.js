@@ -15,7 +15,7 @@ const treeResponse = (paths) => ({
 
 const exampleWrapper = (entity) => ({
     schema: {
-        "$ref": `https://raw.githubusercontent.com/M-casado/fega-metadata-schema/main/schemas/entities/${entity}/schema.json`
+        "$ref": `https://raw.githubusercontent.com/EGA-archive/fega-metadata-schema/dev/schemas/entities/${entity}/schema.json`
     },
     data: {
         "@type": `ega:${entity}`,
@@ -47,8 +47,8 @@ describe("FegaExamplesClient", () => {
         const payload = await client.getExamples();
 
         expect(payload).toMatchObject({
-            source: "M-casado/fega-metadata-schema",
-            ref: "main",
+            source: "EGA-archive/fega-metadata-schema",
+            ref: "dev",
             pattern: "schemas/entities/*/examples/valid/*minimal*.json"
         });
         expect(payload.examples).toHaveLength(1);
@@ -61,7 +61,7 @@ describe("FegaExamplesClient", () => {
             data: exampleWrapper("cohort").data
         });
         expect(payload.examples[0].rawUrl).toBe(
-            "https://raw.githubusercontent.com/M-casado/fega-metadata-schema/main/schemas/entities/cohort/examples/valid/cohort-valid-minimal-study-defined.json"
+            "https://raw.githubusercontent.com/EGA-archive/fega-metadata-schema/dev/schemas/entities/cohort/examples/valid/cohort-valid-minimal-study-defined.json"
         );
         expect(axios).toHaveBeenCalledTimes(2);
     });
