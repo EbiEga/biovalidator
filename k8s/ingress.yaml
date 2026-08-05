@@ -3,9 +3,9 @@ kind: Ingress
 metadata:
   name: biovalidator
   namespace: biovalidator-dev
-  
+
 spec:
-ingressClassName: nginx
+  ingressClassName: nginx
   rules:
     - host: dev.ega.ebi.ac.uk
       http:
