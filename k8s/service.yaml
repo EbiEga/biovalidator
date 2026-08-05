@@ -9,7 +9,7 @@ metadata:
 spec:
   type: ClusterIP
   selector:
-    app.kubernetes.io/name: biovalidator
+    app: biovalidator
   ports:
     - name: http
       protocol: TCP

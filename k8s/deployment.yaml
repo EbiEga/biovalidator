@@ -13,6 +13,9 @@ spec:
       labels:
         app: biovalidator
     spec:
+      # Do not inject legacy Service-link variables such as
+      # BIOVALIDATOR_PORT=tcp://<cluster-ip>:80 into the container.
+      # enableServiceLinks: false
       containers:
         - name: biovalidator
           image: "dockerhub.ebi.ac.uk/ega/biovalidator:main"
@@ -24,18 +27,24 @@ spec:
               cpu: "500m"
               memory: "512Mi"
           imagePullPolicy: Always
+          env:
+            - name: BIOVALIDATOR_PORT
+              value: "3020"
+            - name: BIOVALIDATOR_BASE_URL
+              value: "/biovalidator"
           ports:
-            - containerPort: 3020
+            - name: http
+              containerPort: 3020
           readinessProbe:
             httpGet:
-              path: /biosamples/biovalidator/health
+              path: /biovalidator/health
               port: http
             periodSeconds: 10
             timeoutSeconds: 2
             failureThreshold: 3
           livenessProbe:
             httpGet:
-              path: /biosamples/biovalidator/health
+              path: /biovalidator/health
               port: http
             periodSeconds: 20
             timeoutSeconds: 2

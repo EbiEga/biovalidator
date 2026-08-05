@@ -5,6 +5,7 @@ metadata:
   namespace: biovalidator-dev
   
 spec:
+ingressClassName: nginx
   rules:
     - host: dev.ega.ebi.ac.uk
       http:
