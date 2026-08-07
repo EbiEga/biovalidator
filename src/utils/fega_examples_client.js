@@ -8,7 +8,7 @@ const DEFAULT_REPO = "EGA-archive/fega-metadata-schema";
 const DEFAULT_REF = "dev";
 const DEFAULT_CACHE_TTL_SECONDS = 3600;
 const EXAMPLE_PATTERN = "schemas/entities/*/examples/valid/*minimal*.json";
-const EXAMPLE_PATH_REGEX = /^schemas\/entities\/([^/]+)\/examples\/valid\/([^/]*minimal[^/]*\.json)$/;
+const EXAMPLE_PATH_REGEX = /^schemas\/(?:entities\/([^/]+)\/|graph\/)examples\/valid\/([^/]*minimal[^/]*\.json)$/;
 
 class FegaExamplesClient {
     constructor(options = {}) {
@@ -156,7 +156,7 @@ class FegaExamplesClient {
             throw new Error(`Invalid FEGA example path: ${filePath}`);
         }
 
-        const entity = match[1];
+        const entity = match[1] || "graph";
         const name = path.posix.basename(filePath);
         const id = name.replace(/\.json$/, "");
         const rawUrl = this._rawUrl(filePath, revision);
