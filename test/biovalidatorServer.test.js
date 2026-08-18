@@ -155,7 +155,7 @@ describe('biovalidator server endpoints', () => {
     expect(res.type).toEqual(expect.stringContaining('json'));
     expect(res.body.message).toContain('EGA Biovalidator endpoint');
     expect(res.body.example_post_body.schema).toEqual({
-      "$ref": "https://raw.githubusercontent.com/EGA-archive/fega-metadata-schema/dev/schemas/entities/cohort/schema.json"
+      "$ref": "https://raw.githubusercontent.com/EGA-archive/fega-metadata-schema/main/schemas/entities/cohort/schema.json"
     });
     expect(res.body.example_post_body.data).toMatchObject({
       "@type": "ega:cohort",
@@ -212,7 +212,7 @@ describe('biovalidator server endpoints', () => {
       return Promise.resolve({
         data: {
           schema: {
-            "$ref": "https://raw.githubusercontent.com/EGA-archive/fega-metadata-schema/dev/schemas/entities/cohort/schema.json"
+            "$ref": "https://raw.githubusercontent.com/EGA-archive/fega-metadata-schema/main/schemas/entities/cohort/schema.json"
           },
           data: {
             "@type": "ega:cohort",
@@ -228,7 +228,7 @@ describe('biovalidator server endpoints', () => {
     expect(res.type).toEqual(expect.stringContaining('json'));
     expect(res.body).toMatchObject({
       source: 'EGA-archive/fega-metadata-schema',
-      ref: 'dev',
+      ref: 'main',
       pattern: 'schemas/entities/*/examples/valid/*minimal*.json'
     });
     expect(res.body.examples).toHaveLength(1);
@@ -237,7 +237,7 @@ describe('biovalidator server endpoints', () => {
       entity: 'cohort',
       name: 'cohort-valid-minimal-study-defined.json',
       schema: {
-        "$ref": "https://raw.githubusercontent.com/EGA-archive/fega-metadata-schema/dev/schemas/entities/cohort/schema.json"
+        "$ref": "https://raw.githubusercontent.com/EGA-archive/fega-metadata-schema/main/schemas/entities/cohort/schema.json"
       },
       data: {
         "@type": "ega:cohort",

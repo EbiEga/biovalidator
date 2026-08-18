@@ -102,6 +102,11 @@ The biovalidator also exposes an endpoint for validation: [http://localhost:3020
 
 See the concise [HTTP API reference](docs/api.md) for response semantics and [server security controls](docs/security.md) for outbound policy, worker isolation, cache behavior, and configurable limits.
 
+The `/examples` endpoint fetches minimal valid example wrappers from the
+[`EGA-archive/fega-metadata-schema`](https://github.com/EGA-archive/fega-metadata-schema)
+repository's `main` branch by default. Set `FEGA_METADATA_SCHEMA_REPO` and
+`FEGA_METADATA_SCHEMA_REF` to use another repository or branch when needed.
+
 The `/validate` POST endpoint accepts JSON as data and has the following structure.
 ```json
 {
@@ -240,7 +245,7 @@ node src/biovalidator --ref '/path/to/reference/schema/dir/*.json'
 - `--remoteRef`:
 In server mode, repeat this option to fetch and compile important allowlisted remote schemas before the listener starts. This preserves `$id` lookup and warms the shared remote response cache.
 ```shell
-node src/biovalidator --remoteRef https://raw.githubusercontent.com/M-casado/fega-metadata-schema/main/schemas/common/schema.json
+node src/biovalidator --remoteRef https://raw.githubusercontent.com/EGA-archive/fega-metadata-schema/main/schemas/common/schema.json
 ```
 
 - `--port`:

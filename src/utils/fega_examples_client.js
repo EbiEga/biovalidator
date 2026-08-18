@@ -5,7 +5,7 @@ const {loadSecurityConfig} = require("./security-config");
 const {SecureHttpClient} = require("./secure-http-client");
 
 const DEFAULT_REPO = "EGA-archive/fega-metadata-schema";
-const DEFAULT_REF = "dev";
+const DEFAULT_REF = "main";
 const DEFAULT_CACHE_TTL_SECONDS = 3600;
 const EXAMPLE_PATTERN = "schemas/entities/*/examples/valid/*minimal*.json";
 const EXAMPLE_PATH_REGEX = /^schemas\/(?:entities\/([^/]+)\/|graph\/)examples\/valid\/([^/]*minimal[^/]*\.json)$/;

@@ -27,7 +27,7 @@ describe("server security hardening", () => {
 
     test("permits exact allowlisted HTTPS schema prefixes", () => {
         expect(parseAndValidateUrl(
-            "https://raw.githubusercontent.com/EGA-archive/fega-metadata-schema/dev/schemas/common/schema.json",
+            "https://raw.githubusercontent.com/EGA-archive/fega-metadata-schema/main/schemas/common/schema.json",
             "remoteSchema",
             "server",
             config
@@ -130,7 +130,7 @@ describe("server security hardening", () => {
 
     test("verifies a remote schema that claims a different authoritative $id", async () => {
         const fetchedUrl = "https://raw.githubusercontent.com/attacker/repo/main/schema.json";
-        const claimedUrl = "https://raw.githubusercontent.com/EGA-archive/fega-metadata-schema/dev/schemas/common/schema.json";
+        const claimedUrl = "https://raw.githubusercontent.com/EGA-archive/fega-metadata-schema/main/schemas/common/schema.json";
         const adapter = jest.fn().mockImplementation(({url}) => Promise.resolve({
             status: 200,
             data: url === fetchedUrl

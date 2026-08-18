@@ -12,6 +12,11 @@ The default base URL is `http://localhost:3020/`. `BIOVALIDATOR_BASE_URL` may ad
 | `DELETE` | `/cache` | Clear `all`, `schemas`, or `api` caches using the optional `scope` query parameter. The default is `all`. |
 | `GET` | `/health` | Process-local liveness, validation counters, and cache metrics. |
 
+`GET /examples` reads minimal valid example wrappers from the
+[`EGA-archive/fega-metadata-schema`](https://github.com/EGA-archive/fega-metadata-schema)
+repository at the `main` branch by default. Set `FEGA_METADATA_SCHEMA_REPO` or
+`FEGA_METADATA_SCHEMA_REF` to override the source repository or branch.
+
 ## Validation
 
 `POST /validate` accepts an object with required `schema` and `data` properties. A `200` response contains an empty array when the data is valid, or validation errors when it is invalid. Malformed requests return `400`. Security and capacity rejections use `413`, `422`, `429`, `502`, `503`, or `504` as appropriate and contain `code`, `configuration`, and local-deployment guidance. See [server security controls](security.md).

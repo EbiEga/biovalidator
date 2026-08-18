@@ -315,10 +315,10 @@ class BioValidatorServer {
             "https://github.com/EGA-archive/fega-metadata-schema",
         example_post_body: {
           schema: {
-            "$ref": "https://raw.githubusercontent.com/EGA-archive/fega-metadata-schema/dev/schemas/entities/cohort/schema.json"
+            "$ref": "https://raw.githubusercontent.com/EGA-archive/fega-metadata-schema/main/schemas/entities/cohort/schema.json"
           },
           data: {
-            "@context": "https://raw.githubusercontent.com/EGA-archive/fega-metadata-schema/dev/schemas/entities/cohort/schema.json",
+            "@context": "https://raw.githubusercontent.com/EGA-archive/fega-metadata-schema/main/schemas/entities/cohort/schema.json",
             "@type": "ega:cohort",
             "id": "ega:EGAH00000000001",
             "name": "Barcelona adult genomics cohort",
