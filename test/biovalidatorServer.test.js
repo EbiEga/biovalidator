@@ -53,6 +53,9 @@ describe('biovalidator server endpoints', () => {
     expect(res.text).not.toContain('ajax.googleapis.com');
     expect(res.text).not.toContain('cdn.jsdelivr.net');
     expect(res.text).toContain('id="example-select"');
+    expect(res.text).toContain('role="combobox"');
+    expect(res.text).toContain('id="example-options"');
+    expect(res.text).toContain('role="listbox"');
     expect(res.text).toContain('id="fetch-examples"');
     expect(res.text).toContain('id="load-example"');
     expect(res.text).toContain('FEGA metadata technical report');
@@ -111,10 +114,15 @@ describe('biovalidator server endpoints', () => {
     expect(javascript.text).toContain('cspNonce');
     expect(javascript.text).toContain('Validation error details');
     expect(javascript.text).toContain('Please wait');
+    expect(javascript.text).toContain('aria-activedescendant');
+    expect(javascript.text).toContain('example-schema-pill');
     expect(stylesheet.status).toEqual(200);
     expect(stylesheet.type).toEqual(expect.stringContaining('css'));
     expect(stylesheet.text).toContain('.button-tooltip');
     expect(stylesheet.text).toContain('.btn.example-ready');
+    expect(stylesheet.text).toContain('.example-picker-option');
+    expect(stylesheet.text).toContain('.example-schema-pill--biomaterial');
+    expect(stylesheet.text).toContain('border-radius: 999px');
     expect(stylesheet.text).toContain('.result-editor');
     expect(logo.status).toEqual(200);
     expect(logo.type).toEqual(expect.stringContaining('png'));
@@ -128,6 +136,8 @@ describe('biovalidator server endpoints', () => {
     expect(res.text).toContain('assets/ui.min.js');
     expect(res.text).toContain('assets/ega-logo.png');
     expect(res.text).toContain('data-tooltip="Fetch minimal valid FEGA examples."');
+    expect(res.text).toContain('role="combobox"');
+    expect(res.text).toContain('role="listbox"');
     expect(res.text).not.toContain('ajax.googleapis.com');
     expect(res.text).not.toContain('cdn.jsdelivr.net');
   });

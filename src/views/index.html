@@ -21,9 +21,21 @@
 
         <div class="mb-3">
             <div class="input-group">
-                <select class="form-select" id="example-select" aria-label="FEGA minimal valid example">
-                    <option value="">Fetch examples to populate this list</option>
-                </select>
+                <div class="example-picker" id="example-picker">
+                    <button class="form-select example-picker-toggle" type="button" id="example-select"
+                            role="combobox" aria-haspopup="listbox" aria-expanded="false"
+                            aria-controls="example-options" aria-label="FEGA minimal valid example" disabled>
+                        Fetch examples to populate this list
+                    </button>
+                    <div class="example-picker-menu" id="example-options" role="listbox"
+                         aria-label="FEGA minimal valid examples" hidden>
+                        <div class="example-picker-header" role="presentation">
+                            <span>Schema</span>
+                            <span>Filename</span>
+                        </div>
+                        <div class="example-picker-items"></div>
+                    </div>
+                </div>
                 <button class="btn btn-outline-secondary" type="button" id="fetch-examples"
                         data-tooltip="Fetch minimal valid FEGA examples.">Fetch examples</button>
                 <button class="btn btn-outline-secondary" type="button" id="load-example" disabled

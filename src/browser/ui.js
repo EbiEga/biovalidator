@@ -26,6 +26,10 @@ const validateButton = document.getElementById("validate");
 const validResult = document.getElementById("valid");
 const failedResult = document.getElementById("failed");
 const results = document.getElementById("results");
+const examplePicker = document.getElementById("example-select");
+const examplePickerContainer = document.getElementById("example-picker");
+const exampleMenu = document.getElementById("example-options");
+const exampleOptionList = exampleMenu.querySelector(".example-picker-items");
 const parseLinter = jsonParseLinter();
 const cspNonce = document.querySelector('meta[name="biovalidator-csp-nonce"]')?.content || "";
 const enabledTooltipDelay = 1500;
@@ -33,6 +37,9 @@ const disabledTooltipDelay = 300;
 let visibleTooltip = null;
 let resultView = null;
 let examplesFetched = false;
+let examples = [];
+let selectedExampleId = "";
+let activeExampleIndex = -1;
 
 function hideTooltip(control) {
   window.clearTimeout(control.tooltipTimer);
@@ -362,30 +369,189 @@ async function validateDocuments() {
   }
 }
 
-function populateExamples(payload) {
-  const examples = payload.examples || [];
-  const select = document.getElementById("example-select");
-  const loadButton = document.getElementById("load-example");
-  select.replaceChildren();
-  select.examples = examples;
+function exampleIdentifier(example) {
+  return example && example.id !== undefined && example.id !== null
+    ? String(example.id)
+    : "";
+}
+
+function exampleEntityLabel(example) {
+  return example && typeof example.entity === "string" && example.entity
+    ? example.entity
+    : "unknown";
+}
+
+function exampleFilename(example) {
+  return example && typeof example.name === "string" && example.name
+    ? example.name
+    : "Unnamed example";
+}
+
+function schemaCategory(entity) {
+  const normalized = typeof entity === "string"
+    ? entity.toLowerCase().replace(/[\s_-]+/g, "")
+    : "";
+  if (normalized === "biomaterial") {
+    return "biomaterial";
+  }
+  if (normalized === "datafile") {
+    return "datafile";
+  }
+  if (["process", "protocol", "protocolcollection", "activities"].includes(normalized)) {
+    return "activities";
+  }
+  if (["administrative", "study", "cohort", "project"].includes(normalized)) {
+    return "administrative";
+  }
+  if (["datamanagement", "dataset", "distribution", "policy", "dac", "catalog", "catalogrecord"]
+    .includes(normalized)) {
+    return "data-management";
+  }
+  if (["submission", "submissions"].includes(normalized)) {
+    return "submissions";
+  }
+  if (normalized === "graph") {
+    return "graph";
+  }
+  return "unknown";
+}
+
+function createSchemaPill(entity) {
+  const pill = document.createElement("span");
+  pill.className = `example-schema-pill example-schema-pill--${schemaCategory(entity)}`;
+  pill.textContent = entity;
+  return pill;
+}
+
+function createFilenameLabel(filename) {
+  const label = document.createElement("span");
+  label.className = "example-filename";
+  label.textContent = filename;
+  label.title = filename;
+  return label;
+}
+
+function updateExampleOptionState() {
+  exampleOptionList.querySelectorAll('[role="option"]').forEach((option, index) => {
+    const example = examples[index];
+    const selected = example && exampleIdentifier(example) === selectedExampleId;
+    const active = !exampleMenu.hidden && index === activeExampleIndex;
+    option.setAttribute("aria-selected", String(Boolean(selected)));
+    option.classList.toggle("is-selected", Boolean(selected));
+    option.classList.toggle("is-active", active);
+  });
+  if (!exampleMenu.hidden && activeExampleIndex >= 0) {
+    const activeOption = exampleOptionList.children[activeExampleIndex];
+    if (activeOption) {
+      examplePicker.setAttribute("aria-activedescendant", activeOption.id);
+      activeOption.scrollIntoView({block: "nearest"});
+    }
+  } else {
+    examplePicker.removeAttribute("aria-activedescendant");
+  }
+}
+
+function updateExamplePickerDisplay() {
+  const selected = examples.find((example) => exampleIdentifier(example) === selectedExampleId);
+  examplePicker.replaceChildren();
+  if (!selected) {
+    const message = examples.length
+      ? "Select an example"
+      : "Fetch examples to populate this list";
+    examplePicker.textContent = message;
+    examplePicker.setAttribute("aria-label", message);
+    return;
+  }
+
+  const summary = document.createElement("span");
+  summary.className = "example-picker-summary";
+  summary.append(
+    createSchemaPill(exampleEntityLabel(selected)),
+    createFilenameLabel(exampleFilename(selected))
+  );
+  examplePicker.append(summary);
+  examplePicker.setAttribute(
+    "aria-label",
+    `Selected FEGA example: ${exampleEntityLabel(selected)}, ${exampleFilename(selected)}`
+  );
+}
+
+function setExampleMenuOpen(open) {
+  const shouldOpen = Boolean(open) && !examplePicker.disabled && examples.length > 0;
+  exampleMenu.hidden = !shouldOpen;
+  examplePicker.setAttribute("aria-expanded", String(shouldOpen));
+  if (shouldOpen) {
+    const selectedIndex = examples.findIndex(
+      (example) => exampleIdentifier(example) === selectedExampleId
+    );
+    activeExampleIndex = selectedIndex >= 0 ? selectedIndex : 0;
+  } else {
+    activeExampleIndex = -1;
+  }
+  updateExampleOptionState();
+}
+
+function createExampleOption(example, index) {
+  const option = document.createElement("div");
+  option.className = "example-picker-option";
+  option.id = `example-option-${index}`;
+  option.setAttribute("role", "option");
+  option.dataset.exampleIndex = String(index);
+  option.append(
+    createSchemaPill(exampleEntityLabel(example)),
+    createFilenameLabel(exampleFilename(example))
+  );
+  option.addEventListener("click", () => selectExample(index));
+  return option;
+}
+
+function selectExample(index) {
+  const example = examples[index];
+  if (!example) {
+    return;
+  }
+  selectedExampleId = exampleIdentifier(example);
+  activeExampleIndex = index;
+  updateExamplePickerDisplay();
+  updateExampleOptionState();
+  updateLoadExampleButton();
+  setExampleMenuOpen(false);
+  examplePicker.focus();
+}
+
+function moveActiveExample(offset) {
   if (!examples.length) {
-    select.append(new Option("No FEGA examples available", ""));
-    select.disabled = true;
+    return;
+  }
+  const current = activeExampleIndex >= 0 ? activeExampleIndex : 0;
+  activeExampleIndex = Math.max(0, Math.min(examples.length - 1, current + offset));
+  updateExampleOptionState();
+}
+
+function populateExamples(payload) {
+  examples = Array.isArray(payload.examples) ? payload.examples : [];
+  selectedExampleId = examples.length ? exampleIdentifier(examples[0]) : "";
+  setExampleMenuOpen(false);
+  exampleOptionList.replaceChildren();
+  examples.forEach((example, index) => exampleOptionList.append(createExampleOption(example, index)));
+  updateExamplePickerDisplay();
+  const loadButton = document.getElementById("load-example");
+  if (!examples.length) {
+    examplePicker.disabled = true;
     loadButton.classList.remove("example-ready");
     setButtonState(loadButton, {disabled: true, tooltip: "Fetch examples, then select one to load."});
     setExamplesMessage("No minimal valid FEGA examples were returned.", true);
     return;
   }
-  examples.forEach((example) => select.append(new Option(`${example.entity}: ${example.name}`, example.id)));
-  select.disabled = false;
+  examplePicker.disabled = false;
+  updateExampleOptionState();
   updateLoadExampleButton();
   setExamplesMessage(`Loaded ${examples.length} minimal valid FEGA examples.`);
 }
 
 function updateLoadExampleButton() {
-  const select = document.getElementById("example-select");
   const loadButton = document.getElementById("load-example");
-  const selected = (select.examples || []).some((example) => example.id === select.value);
+  const selected = examples.some((example) => exampleIdentifier(example) === selectedExampleId);
   loadButton.classList.toggle("example-ready", selected);
   setButtonState(loadButton, {
     disabled: !selected,
@@ -396,14 +562,14 @@ function updateLoadExampleButton() {
 }
 
 async function fetchExamples() {
-  const select = document.getElementById("example-select");
   const loadButton = document.getElementById("load-example");
   const fetchButton = document.getElementById("fetch-examples");
   const previousButtonText = fetchButton.textContent;
-  const hadExamples = Array.isArray(select.examples) && select.examples.length > 0;
-  const previousValue = select.value;
+  const hadExamples = examples.length > 0;
+  const previousValue = selectedExampleId;
   let fetched = false;
-  select.disabled = true;
+  setExampleMenuOpen(false);
+  examplePicker.disabled = true;
   loadButton.classList.remove("example-ready");
   setButtonState(loadButton, {disabled: true, tooltip: "Examples are being fetched."});
   setButtonState(fetchButton, {disabled: true, tooltip: "Examples are being fetched."});
@@ -420,8 +586,10 @@ async function fetchExamples() {
     fetched = true;
     examplesFetched = true;
   } catch (error) {
-    select.value = previousValue;
-    select.disabled = !hadExamples;
+    selectedExampleId = previousValue;
+    updateExamplePickerDisplay();
+    examplePicker.disabled = !hadExamples;
+    updateExampleOptionState();
     updateLoadExampleButton();
     setExamplesMessage(exampleErrorMessage(error), true);
   } finally {
@@ -438,8 +606,7 @@ async function fetchExamples() {
 }
 
 function loadSelectedExample() {
-  const select = document.getElementById("example-select");
-  const example = (select.examples || []).find((candidate) => candidate.id === select.value);
+  const example = examples.find((candidate) => exampleIdentifier(candidate) === selectedExampleId);
   if (!example) {
     setExamplesMessage("Select a FEGA example to load.", true);
     return;
@@ -449,12 +616,67 @@ function loadSelectedExample() {
   setExamplesMessage(`Loaded ${example.name}.`);
 }
 
+function handleExamplePickerKeydown(event) {
+  if (!examples.length || examplePicker.disabled) {
+    return;
+  }
+  const menuOpen = !exampleMenu.hidden;
+  if (event.key === "Escape" && menuOpen) {
+    event.preventDefault();
+    setExampleMenuOpen(false);
+    return;
+  }
+  if ((event.key === "Enter" || event.key === " ") && menuOpen) {
+    event.preventDefault();
+    selectExample(activeExampleIndex);
+    return;
+  }
+  if ((event.key === "Enter" || event.key === " ") && !menuOpen) {
+    event.preventDefault();
+    setExampleMenuOpen(true);
+    return;
+  }
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    if (!menuOpen) {
+      setExampleMenuOpen(true);
+    } else {
+      moveActiveExample(1);
+    }
+    return;
+  }
+  if (event.key === "ArrowUp") {
+    event.preventDefault();
+    if (!menuOpen) {
+      setExampleMenuOpen(true);
+      activeExampleIndex = examples.length - 1;
+      updateExampleOptionState();
+    } else {
+      moveActiveExample(-1);
+    }
+    return;
+  }
+  if (menuOpen && event.key === "Home") {
+    event.preventDefault();
+    activeExampleIndex = 0;
+    updateExampleOptionState();
+    return;
+  }
+  if (menuOpen && event.key === "End") {
+    event.preventDefault();
+    activeExampleIndex = examples.length - 1;
+    updateExampleOptionState();
+  }
+}
+
 function initialise() {
   document.querySelectorAll("[data-tooltip]").forEach(addButtonTooltip);
   createJsonEditor("schema");
   createJsonEditor("data");
   createResultEditor();
-  document.getElementById("example-select").disabled = true;
+  examplePicker.disabled = true;
+  examplePicker.setAttribute("aria-expanded", "false");
+  updateExamplePickerDisplay();
   setButtonState(document.getElementById("load-example"), {
     disabled: true,
     tooltip: "Fetch examples, then select one to load."
@@ -462,7 +684,18 @@ function initialise() {
   setExamplesMessage("Fetch FEGA examples when you want to load or refresh the list.");
   document.getElementById("fetch-examples").addEventListener("click", fetchExamples);
   document.getElementById("load-example").addEventListener("click", loadSelectedExample);
-  document.getElementById("example-select").addEventListener("change", updateLoadExampleButton);
+  examplePicker.addEventListener("click", () => setExampleMenuOpen(exampleMenu.hidden));
+  examplePicker.addEventListener("keydown", handleExamplePickerKeydown);
+  document.addEventListener("pointerdown", (event) => {
+    if (!examplePickerContainer.contains(event.target)) {
+      setExampleMenuOpen(false);
+    }
+  });
+  document.addEventListener("focusin", (event) => {
+    if (!examplePickerContainer.contains(event.target)) {
+      setExampleMenuOpen(false);
+    }
+  });
   validateButton.addEventListener("click", validateDocuments);
 }
 
