@@ -1,7 +1,7 @@
 # CODEOWNERS
 
 /.github/                           @m-casado
-/src/
+/src/                               @m-casado
 /scripts/                           @m-casado
 /Dockerfile                         @m-casado
 /k8s/                               @m-casado
