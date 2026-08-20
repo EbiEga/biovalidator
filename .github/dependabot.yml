@@ -1,0 +1,40 @@
+version: 2
+
+updates:
+  # Node.js dependencies from package.json / package-lock.json
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    # Keep routine updates together while leaving major upgrades for
+    # individual review.
+    groups:
+      npm-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # GitHub Actions used by workflows
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    # Workflow action updates are tested together by the CI workflow.
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  # Base images referenced by Dockerfile
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    # Keep the two references to the runtime image in sync in one PR.
+    groups:
+      docker-images:
+        patterns:
+          - "*"
