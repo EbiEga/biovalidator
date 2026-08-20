@@ -2,6 +2,9 @@
 # Runs npm tests to ensure code quality
 name: CI - Run tests
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]
