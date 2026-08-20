@@ -1,0 +1,10 @@
+# CODEOWNERS
+
+/.github/                           @m-casado
+/src/
+/scripts/                           @m-casado
+/Dockerfile                         @m-casado
+/k8s/                               @m-casado
+/package.json                       @m-casado
+/package-lock.json                  @m-casado
+/.gitlab-ci.yml                     @m-casado
