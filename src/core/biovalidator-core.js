@@ -165,16 +165,34 @@ class BioValidator {
      */
     clearSchemaCaches() {
         logger.info("Clearing compiled validator and remote reference caches.");
+        // AJV may register a remotely loaded schema in the context that
+        // requested it as well as in the context selected by its $schema.
+        // Track every transient URI/alias first, then remove those IDs from
+        // every AJV context. Otherwise a cross-draft compilation can reuse a
+        // schema that is no longer present in referencedSchemaCache.
+        const transientSchemaIds = new Set();
+        const remoteMetadata = new Set();
         for (const context of Object.values(this.ajvContexts)) {
-            const transientSchemaIds = [...context.referencedSchemaCache.keys()];
-            for (const schemaId of transientSchemaIds) {
+            for (const schemaId of context.referencedSchemaCache.keys()) {
+                transientSchemaIds.add(schemaId);
                 const metadata = context.referencedSchemaMetadata.get(schemaId);
-                this._releaseRemoteSchemaMetadata(metadata);
+                if (metadata) {
+                    remoteMetadata.add(metadata);
+                    for (const alias of metadata.ajvAliases || []) {
+                        transientSchemaIds.add(alias);
+                    }
+                }
+            }
+        }
+
+        for (const metadata of remoteMetadata) {
+            this._releaseRemoteSchemaMetadata(metadata);
+        }
+
+        for (const context of Object.values(this.ajvContexts)) {
+            for (const schemaId of transientSchemaIds) {
                 try {
                     context.ajv.removeSchema(schemaId);
-                    for (const alias of metadata && metadata.ajvAliases || []) {
-                        context.ajv.removeSchema(alias);
-                    }
                 } catch (error) {
                     logger.warn(`Failed to remove transient schema '${schemaId}' from AJV context ${context.type}: ${error.message || error}`);
                 }

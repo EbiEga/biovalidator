@@ -65,18 +65,30 @@ const validator = new BioValidator(workerData.localSchemaPath, {
     httpClient: new ParentHttpClient()
 });
 
+let validationInFlight = false;
+const pendingCacheClears = [];
+
+function clearCaches(message) {
+    validator.clearSchemaCaches();
+    parentPort.postMessage({type: "cacheCleared", clearId: message.clearId, inventory: validator.getSchemaInventory()});
+}
+
 parentPort.on("message", async (message) => {
     if (!message) {
         return;
     }
     if (message.type === "clearCaches") {
-        validator.clearSchemaCaches();
-        parentPort.postMessage({type: "cacheCleared", inventory: validator.getSchemaInventory()});
+        if (validationInFlight) {
+            pendingCacheClears.push(message);
+        } else {
+            clearCaches(message);
+        }
         return;
     }
     if (message.type !== "validate") {
         return;
     }
+    validationInFlight = true;
     try {
         const result = await validator.validate(message.schema, message.data);
         parentPort.postMessage({
@@ -92,6 +104,11 @@ parentPort.on("message", async (message) => {
             error: serializeError(error),
             inventory: validator.getSchemaInventory()
         });
+    } finally {
+        validationInFlight = false;
+        while (pendingCacheClears.length > 0) {
+            clearCaches(pendingCacheClears.shift());
+        }
     }
 });
 

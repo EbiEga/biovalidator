@@ -488,10 +488,11 @@ class BioValidatorServer {
         }
 
         const cleared = [];
+        const clearPromises = [];
         if (scope === "all" || scope === "schemas") {
           this.biovalidator.clearSchemaCaches();
           if (this.validationPool) {
-            this.validationPool.clearSchemaCaches();
+            clearPromises.push(this.validationPool.clearSchemaCaches());
           }
           this.httpClient.clear("schemas");
           cleared.push("schemas");
@@ -502,10 +503,15 @@ class BioValidatorServer {
           cleared.push("api");
         }
 
-        res.send({
-          message: "Cache cleared successfully",
-          scope,
-          cleared
+        Promise.all(clearPromises).then(() => {
+          res.send({
+            message: "Cache cleared successfully",
+            scope,
+            cleared
+          });
+        }).catch((error) => {
+          logServerError("Failed to clear cache", error);
+          sendError(res, 500, "Cache could not be cleared.");
         });
       });
     }

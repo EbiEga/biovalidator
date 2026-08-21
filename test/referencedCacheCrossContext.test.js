@@ -31,3 +31,48 @@ test('Referenced schema in 2020 cache is reused when referenced from 2019 compil
   expect(errors).toBeDefined();
   expect(errors.length).toBe(0);
 });
+
+test('Clearing cross-draft references removes AJV registrations so they are cached again', async () => {
+  const dac = 'https://example.org/entities/DAC/schema.json';
+  const common = 'https://example.org/schemas/common/schema.json';
+  const fega = 'https://example.org/standards/FEGA.jsonld-schema.json';
+  const remoteSchemas = {
+    [dac]: {
+      $id: dac,
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object',
+      allOf: [{$ref: common}, {$ref: fega}]
+    },
+    [common]: {
+      $id: common,
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object'
+    },
+    [fega]: {
+      $id: fega,
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object'
+    }
+  };
+  const httpClient = {
+    getJson: jest.fn(async (url) => ({
+      status: 200,
+      data: remoteSchemas[url],
+      sizeBytes: 100,
+      headers: {}
+    }))
+  };
+  const validator = new BioValidator(null, {httpClient});
+  const inputSchema = {$ref: dac};
+
+  await validator.validate(inputSchema, {});
+  expect(validator.getSchemaInventory().referenced).toEqual([dac, common, fega].sort());
+  expect(httpClient.getJson).toHaveBeenCalledTimes(3);
+
+  validator.clearSchemaCaches();
+  expect(validator.getSchemaInventory()).toEqual({registered: [], validatorID: [], referenced: []});
+
+  await validator.validate(inputSchema, {});
+  expect(validator.getSchemaInventory().referenced).toEqual([dac, common, fega].sort());
+  expect(httpClient.getJson).toHaveBeenCalledTimes(6);
+});
