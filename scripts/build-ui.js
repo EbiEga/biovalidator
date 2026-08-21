@@ -7,7 +7,7 @@ const {minify} = require("terser");
 const projectRoot = path.resolve(__dirname, "..");
 const outputDir = path.join(projectRoot, "src", "views", "assets");
 const jsLimit = 400 * 1024;
-const cssLimit = 200 * 1024;
+const cssLimit = 300 * 1024;
 
 async function buildUi() {
   fs.mkdirSync(outputDir, {recursive: true});

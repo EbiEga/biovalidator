@@ -14,6 +14,20 @@ function hydrateError(serialized) {
     return error;
 }
 
+function createInventory() {
+    return {registered: new Set(), validatorID: new Set(), referenced: new Set()};
+}
+
+function inventoryFromMessage(inventory) {
+    const result = createInventory();
+    for (const category of Object.keys(result)) {
+        for (const value of inventory && inventory[category] || []) {
+            result[category].add(value);
+        }
+    }
+    return result;
+}
+
 class ValidationPool {
     constructor(options) {
         this.localSchemaPath = options.localSchemaPath;
@@ -24,7 +38,9 @@ class ValidationPool {
         this.queue = [];
         this.jobs = new Map();
         this.sequence = 0;
-        this.inventory = {registered: new Set(), validatorID: new Set(), referenced: new Set()};
+        this.inventory = createInventory();
+        this.cacheClearSequence = 0;
+        this.cacheClearPromise = null;
         this.closed = false;
     }
 
@@ -55,6 +71,12 @@ class ValidationPool {
                     pendingSlot.pendingJob = null;
                     pendingSlot.intentional = true;
                     this.workers = this.workers.filter((slot) => slot !== pendingSlot);
+                    if (pendingSlot.cacheClear) {
+                        const resolve = pendingSlot.cacheClear.resolve;
+                        pendingSlot.cacheClear = null;
+                        resolve();
+                    }
+                    this._rebuildInventory();
                     pendingSlot.worker.terminate();
                 } else {
                     return;
@@ -78,7 +100,7 @@ class ValidationPool {
     }
 
     _dispatch() {
-        if (this.closed || this.queue.length === 0) {
+        if (this.closed || this.cacheClearPromise || this.queue.length === 0) {
             return;
         }
         let idle = this.workers.filter((slot) => slot.ready && !slot.job);
@@ -102,7 +124,16 @@ class ValidationPool {
                 securityConfig: this.securityConfig
             }
         });
-        const slot = {worker, ready: false, job: null, pendingJob: null, digests: new Set(), intentional: false};
+        const slot = {
+            worker,
+            ready: false,
+            job: null,
+            pendingJob: null,
+            digests: new Set(),
+            inventory: createInventory(),
+            cacheClear: null,
+            intentional: false
+        };
         this.workers.push(slot);
         worker.on("message", (message) => this._onMessage(slot, message));
         worker.on("error", (error) => this._onWorkerFailure(slot, error));
@@ -120,7 +151,7 @@ class ValidationPool {
         }
         if (message.type === "ready") {
             slot.ready = true;
-            this._mergeInventory(message.inventory);
+            this._setWorkerInventory(slot, message.inventory);
             if (slot.pendingJob) {
                 const job = slot.pendingJob;
                 slot.pendingJob = null;
@@ -151,7 +182,12 @@ class ValidationPool {
             return;
         }
         if (message.type === "cacheCleared") {
-            this._replaceRegisteredInventory(message.inventory);
+            this._setWorkerInventory(slot, message.inventory);
+            if (slot.cacheClear && (message.clearId === undefined || message.clearId === slot.cacheClear.id)) {
+                const resolve = slot.cacheClear.resolve;
+                slot.cacheClear = null;
+                resolve();
+            }
             return;
         }
         if (message.type === "validationResult" && slot.job && slot.job.id === message.jobId) {
@@ -160,7 +196,7 @@ class ValidationPool {
             slot.job = null;
             this.jobs.delete(job.id);
             slot.digests.add(job.digest);
-            this._mergeInventory(message.inventory);
+            this._setWorkerInventory(slot, message.inventory);
             if (message.error) {
                 job.reject(hydrateError(message.error));
             } else {
@@ -183,6 +219,12 @@ class ValidationPool {
             slot.intentional = true;
             slot.worker.terminate();
             this.workers = this.workers.filter((candidate) => candidate !== slot);
+            if (slot.cacheClear) {
+                const resolve = slot.cacheClear.resolve;
+                slot.cacheClear = null;
+                resolve();
+            }
+            this._rebuildInventory();
             job.reject(new SecurityLimitError(
                 `This validation exceeded this Biovalidator deployment's ${this.securityConfig.validationTimeoutMs}ms deadline.`,
                 {
@@ -215,6 +257,12 @@ class ValidationPool {
             return;
         }
         this.workers = this.workers.filter((candidate) => candidate !== slot);
+        if (slot.cacheClear) {
+            const resolve = slot.cacheClear.resolve;
+            slot.cacheClear = null;
+            resolve();
+        }
+        this._rebuildInventory();
         if (slot.job) {
             clearTimeout(slot.job.executionTimer);
             this.jobs.delete(slot.job.id);
@@ -229,32 +277,65 @@ class ValidationPool {
         this._dispatch();
     }
 
-    _mergeInventory(inventory) {
-        if (!inventory) {
-            return;
-        }
+    _setWorkerInventory(slot, inventory) {
+        slot.inventory = inventoryFromMessage(inventory);
+        this._rebuildInventory();
+    }
+
+    _rebuildInventory() {
         for (const category of Object.keys(this.inventory)) {
-            for (const value of inventory[category] || []) {
-                this.inventory[category].add(value);
+            this.inventory[category].clear();
+        }
+        for (const slot of this.workers) {
+            for (const category of Object.keys(this.inventory)) {
+                for (const value of slot.inventory && slot.inventory[category] || []) {
+                    this.inventory[category].add(value);
+                }
             }
         }
     }
 
-    _replaceRegisteredInventory(inventory) {
-        this.inventory.validatorID.clear();
-        this.inventory.referenced.clear();
-        for (const value of inventory && inventory.registered || []) {
-            this.inventory.registered.add(value);
+    _requestWorkerCacheClear(slot, clearId) {
+        if (!this.workers.includes(slot) || slot.intentional) {
+            return Promise.resolve();
         }
+        return new Promise((resolve) => {
+            slot.cacheClear = {id: clearId, resolve};
+            try {
+                slot.worker.postMessage({type: "clearCaches", clearId});
+            } catch (error) {
+                slot.cacheClear = null;
+                this._onWorkerFailure(slot, error);
+                resolve();
+            }
+        });
     }
 
     clearSchemaCaches() {
+        if (this.cacheClearPromise) {
+            return this.cacheClearPromise;
+        }
+
         this.inventory.validatorID.clear();
         this.inventory.referenced.clear();
-        for (const slot of this.workers) {
+        const slots = [...this.workers];
+        for (const slot of slots) {
             slot.digests.clear();
-            this._postToLiveWorker(slot, {type: "clearCaches"});
+            if (slot.inventory) {
+                slot.inventory.validatorID.clear();
+                slot.inventory.referenced.clear();
+            }
         }
+        this._rebuildInventory();
+
+        const clearId = ++this.cacheClearSequence;
+        this.cacheClearPromise = Promise.all(slots.map((slot) => this._requestWorkerCacheClear(slot, clearId)))
+            .then(() => {
+                this.cacheClearPromise = null;
+                this._rebuildInventory();
+                this._dispatch();
+            });
+        return this.cacheClearPromise;
     }
 
     getSchemaInventory() {
@@ -287,6 +368,11 @@ class ValidationPool {
                 this.jobs.delete(slot.job.id);
                 slot.job.reject(new Error("Validation worker pool closed."));
                 slot.job = null;
+            }
+            if (slot.cacheClear) {
+                const resolve = slot.cacheClear.resolve;
+                slot.cacheClear = null;
+                resolve();
             }
         }
         await Promise.all(this.workers.map((slot) => {
