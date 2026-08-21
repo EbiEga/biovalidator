@@ -1,6 +1,5 @@
 const express = require("express");
 const {logger, addLogDirectory} = require("../utils/winston");
-const AppError = require("../model/application-error");
 const SecurityLimitError = require("../model/security-limit-error");
 const BioValidator = require("./biovalidator-core")
 const ValidationPool = require("./validation-pool");
@@ -21,6 +20,107 @@ const VIEW_ROOT = path.join(__dirname, "..", "views");
 const CSP_NONCE_PLACEHOLDER = "__BIOVALIDATOR_CSP_NONCE__";
 const SHUTDOWN_SIGNALS = Object.freeze(["SIGTERM", "SIGINT", "SIGUSR1"]);
 const SHUTDOWN_TIMEOUT_MS = 25_000;
+
+const JSON_STRING_ESCAPES = Object.freeze({
+  "<": "\\u003c",
+  ">": "\\u003e",
+  "&": "\\u0026",
+  "'": "\\u0027",
+  "\u2028": "\\u2028",
+  "\u2029": "\\u2029"
+});
+
+/**
+ * Serialize a response payload without allowing string values to become HTML
+ * when a JSON response is embedded in a browser context. JSON.stringify is
+ * still responsible for normal JSON escaping; this pass only escapes
+ * characters that are significant to HTML/script parsers inside JSON strings.
+ *
+ * @param {unknown} payload plain JSON-compatible response payload.
+ * @returns {string} JSON response body.
+ */
+function safeJsonStringify(payload) {
+  const serialized = JSON.stringify(payload);
+  if (serialized === undefined) {
+    return JSON.stringify({error: "Request could not be processed."});
+  }
+
+  let result = "";
+  let inString = false;
+  let escaped = false;
+  for (const character of serialized) {
+    if (!inString) {
+      result += character;
+      if (character === '"') {
+        inString = true;
+      }
+      continue;
+    }
+
+    if (escaped) {
+      // JSON.stringify emits escaped double quotes as `\"`; encode the quote
+      // value without touching structural quotes around JSON strings.
+      result += character === '"' ? "u0022" : character;
+      escaped = false;
+      continue;
+    }
+    if (character === "\\") {
+      result += character;
+      escaped = true;
+      continue;
+    }
+    if (character === '"') {
+      result += character;
+      inString = false;
+      continue;
+    }
+
+    result += JSON_STRING_ESCAPES[character] || character;
+  }
+  return result;
+}
+
+function isPlainJsonObject(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function sendJson(res, status, payload) {
+  const responsePayload = isPlainJsonObject(payload)
+    ? payload
+    : {error: "Request could not be processed."};
+  res.status(status)
+    .type("application/json")
+    .send(safeJsonStringify(responsePayload));
+}
+
+function sendError(res, status, message) {
+  sendJson(res, status, {error: message});
+}
+
+function statusForError(error, fallback = 500) {
+  return Number.isInteger(error && error.status) && error.status >= 400 && error.status <= 599
+    ? error.status
+    : fallback;
+}
+
+function describeError(error) {
+  if (error instanceof Error) {
+    return error.stack || `${error.name}: ${error.message}`;
+  }
+  try {
+    return JSON.stringify(error);
+  } catch (serializationError) {
+    return String(error);
+  }
+}
+
+function logServerError(context, error) {
+  logger.error(`${context}: ${describeError(error)}`);
+}
 
 function isCacheEndpointEnabled(environment = process.env) {
   const configured = environment.BIOVALIDATOR_CACHE_ENDPOINT_ENABLED;
@@ -218,15 +318,13 @@ class BioValidatorServer {
               observed: Number(req.headers["content-length"]) || undefined, unit: "bytes"}
           }
         );
-        res.status(413).send(limitError);
+        sendJson(res, 413, limitError.toJSON());
       } else if (err instanceof SyntaxError && err.status === 400 && "body" in err) {
-        let appError = new AppError("Received malformed JSON.");
-        logger.log("info", appError.error);
-        res.status(400).send(appError);
+        logger.info("Received malformed JSON.");
+        sendError(res, 400, "Received malformed JSON.");
       } else {
-        let appError = new AppError(err.message);
-        logger.log("error", appError.error);
-        res.status(err.status || 500).send(appError);
+        logServerError("Unhandled request error", err);
+        sendError(res, statusForError(err), "Request could not be processed.");
       }
     });
 
@@ -280,7 +378,7 @@ class BioValidatorServer {
     this.router.post("/validate", (req, res) => {
       let startTime = new Date().getTime();
       if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
-        res.status(400).send(new AppError("Malformed data. The request body must be a JSON object."));
+        sendError(res, 400, "Malformed data. The request body must be a JSON object.");
         return;
       }
       let inputSchema = req.body.schema;
@@ -296,14 +394,18 @@ class BioValidatorServer {
           res.status(200).send(output);
           logger.info("New validation request: Processed successfully in " + (new Date().getTime() - startTime) + "ms.");
         }).catch((error) => {
-          const status = error instanceof SecurityLimitError ? error.status : (error.status || 500);
-          res.status(status).send(typeof error.toJSON === "function" ? error.toJSON() : error);
-          logger.error("New validation request: Server failed to process data: " + JSON.stringify(error));
+          const status = statusForError(error);
+          logServerError("New validation request: Server failed to process data", error);
+          if (error instanceof SecurityLimitError) {
+            sendJson(res, status, error.toJSON());
+          } else {
+            sendError(res, status, "Validation failed. See server logs for details.");
+          }
         });
       } else {
-        let appError = new AppError("Malformed data. Please provide both 'schema' and 'data' in request body.");
-        res.status(400).send(appError);
-        logger.info("New validation request: " + appError.error);
+        const message = "Malformed data. Please provide both 'schema' and 'data' in request body.";
+        sendError(res, 400, message);
+        logger.info("New validation request: " + message);
       }
     });
 
@@ -346,7 +448,7 @@ class BioValidatorServer {
             }
           );
           res.set("Retry-After", String(retryAfterSeconds));
-          res.status(error.status).send(error);
+          sendJson(res, error.status, error.toJSON());
           return;
         }
         this.lastExamplesRefreshAt = now;
@@ -358,13 +460,12 @@ class BioValidatorServer {
         res.status(200).send(examples);
       }).catch((error) => {
         if (error instanceof SecurityLimitError) {
-          logger.error(error.message);
-          res.status(error.status).send(error);
+          logServerError("Failed to load FEGA examples", error);
+          sendJson(res, error.status, error.toJSON());
           return;
         }
-        const appError = new AppError("Failed to load FEGA examples. " + (error.message || error));
-        logger.error(appError.error);
-        res.status(502).send(appError);
+        logServerError("Failed to load FEGA examples", error);
+        sendError(res, 502, "Failed to load FEGA examples.");
       });
     });
 
@@ -382,7 +483,7 @@ class BioValidatorServer {
         const scope = req.query.scope === undefined ? "all" : req.query.scope;
         const validScopes = new Set(["all", "schemas", "api"]);
         if (typeof scope !== "string" || !validScopes.has(scope)) {
-          res.status(400).send(new AppError("Invalid cache scope. Expected one of: all, schemas, api."));
+          sendError(res, 400, "Invalid cache scope. Expected one of: all, schemas, api.");
           return;
         }
 
