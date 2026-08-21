@@ -10,9 +10,15 @@
   "scripts": {
     "build:ui": "node scripts/build-ui.js",
     "start": "node src/biovalidator.js",
-    "test": "jest",
-    "test-watch": "nodemon --exec \"npm test\"",
-    "travis-test": "jest test/validator.test.js"
+    "test": "npm run test:internal",
+    "test:internal": "jest --config jest.internal.config.js",
+    "test:external": "jest --config jest.external.config.js",
+    "test:external:ena": "jest --config jest.external.config.js test/external/ena.test.js",
+    "test:external:identifiers": "jest --config jest.external.config.js test/external/identifiers.test.js",
+    "test:external:ols": "jest --config jest.external.config.js test/external/ols.test.js",
+    "test:external:github": "jest --config jest.external.config.js test/external/github.test.js",
+    "test-watch": "nodemon --exec \"npm run test:internal\"",
+    "travis-test": "npm run test:internal -- test/validator.test.js"
   },
   "engines": {
     "node": ">=22.0.0"
@@ -61,12 +67,6 @@
     "body-parser": "1.20.6",
     "glob": "^13.0.6",
     "test-exclude": "^8.0.0"
-  },
-  "jest": {
-    "moduleNameMapper": {
-      "/axios/": "axios/dist/node/axios.cjs"
-    },
-    "testEnvironment": "node"
   },
   "allowScripts": {
     "unrs-resolver@1.12.2": true

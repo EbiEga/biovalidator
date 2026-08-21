@@ -1,5 +1,5 @@
 # CI workflow: runs tests on PRs to main/dev, pushes to main, or manual dispatch
-# Runs npm tests to ensure code quality
+# Runs the deterministic/internal test suite to ensure code quality
 name: CI - Run tests
 
 permissions:
@@ -23,13 +23,13 @@ concurrency:
 
 jobs:
   test:
-    name: Run tests (Node ${{ matrix.node-version }})
+    name: Run internal tests (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        node-version: ['22', '24']
+        node-version: ['22', '24', '26']
 
     steps:
       - name: Checkout repository
@@ -52,7 +52,7 @@ jobs:
         run: npm ci
 
       - name: Run tests
-        run: npm test --silent
+        run: npm run test:internal --silent
         env:
           CI: true
 

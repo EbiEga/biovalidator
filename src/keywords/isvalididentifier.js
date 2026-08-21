@@ -105,7 +105,12 @@ class IsValidIdentifier {
                     responsePromise = Promise.resolve(identifiersCache.get(identifier));
                     logger.debug("Returning cached response for identifiers.org request: " + identifier)
                 } else {
-                    responsePromise = this.httpClient.getJson(this.identifiersOrgUrl + encodeURIComponent(identifier), {
+                    const separatorIndex = identifier.indexOf(":");
+                    const identifierPath = separatorIndex === -1
+                        ? encodeURIComponent(identifier)
+                        : `${encodeURIComponent(identifier.slice(0, separatorIndex))}:` +
+                            encodeURIComponent(identifier.slice(separatorIndex + 1));
+                    responsePromise = this.httpClient.getJson(this.identifiersOrgUrl + identifierPath, {
                         kind: "identifiers",
                         maxBytes: this.securityConfig.apiResponseMaxBytes,
                         cache: true
