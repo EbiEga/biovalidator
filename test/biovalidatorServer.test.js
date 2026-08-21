@@ -13,6 +13,7 @@ const {
 } = require('../src/keywords/shared-cache');
 
 const BioValidatorServer = require('../src/core/server');
+const SecurityLimitError = require('../src/model/security-limit-error');
 const {
   resolveDeploymentMetadata,
   resolveDependencyVersions,
@@ -187,6 +188,16 @@ describe('biovalidator server endpoints', () => {
     expect(res.body.error).toContain("provide both 'schema' and 'data'");
   });
 
+  it('malformed JSON returns a fixed error without parser details', async () => {
+    const res = await requestWithSupertest.post('/validate')
+      .set('Content-Type', 'application/json')
+      .send('{"schema":');
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({error: 'Received malformed JSON.'});
+    expect(res.body.stack).toBeUndefined();
+  });
+
   it('POST /validate identifies the unresolved remote $ref', async () => {
     const res = await requestWithSupertest.post('/validate').send({
       schema: {$ref: 'pepito'},
@@ -199,6 +210,41 @@ describe('biovalidator server endpoints', () => {
       reference: 'pepito',
       error: expect.stringContaining("remote $ref 'pepito'")
     });
+  });
+
+  it('POST /validate does not expose unexpected validation errors', async () => {
+    const errorServer = new BioValidatorServer("3031", "", {
+      securityProfile: 'compatible',
+      disableWorkers: true
+    });
+    errorServer._configureServer()._configureEndpoints();
+    const secret = '/srv/biovalidator/private-schema.json';
+    const validationError = new Error(`internal validation failure: ${secret}`);
+    validationError.stack = `Error: internal validation failure: ${secret}\n    at validate (${secret}:12:4)`;
+    errorServer.biovalidator.validate = jest.fn().mockRejectedValue(validationError);
+
+    const res = await supertest(errorServer.app).post('/validate').send({
+      schema: {type: 'object'},
+      data: {}
+    });
+
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({error: 'Validation failed. See server logs for details.'});
+    expect(res.text).not.toContain(secret);
+    expect(res.body.stack).toBeUndefined();
+  });
+
+  it('JSON-escapes attacker-controlled security-limit details without changing parsed values', async () => {
+    const maliciousReference = '<img src=x onerror=alert(1)>';
+    const res = await requestWithSupertest.post('/validate').send({
+      schema: {$ref: maliciousReference},
+      data: {}
+    });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain('%3Cimg%20src%3Dx%20onerror%3Dalert');
+    expect(res.text).not.toContain('<img');
+    expect(res.body.stack).toBeUndefined();
   });
 
   it('GET /examples returns dynamically fetched FEGA examples', async () => {
@@ -316,6 +362,7 @@ describe('biovalidator server endpoints', () => {
     expect(second.headers['retry-after']).toBe(String(second.body.retry_after_seconds));
     expect(second.body.error).toContain('before refreshing the FEGA examples');
     expect(second.body.help).toContain('Deploy Biovalidator locally');
+    expect(second.body.stack).toBeUndefined();
     expect(axios).toHaveBeenCalledTimes(2);
   });
 
@@ -359,8 +406,37 @@ describe('biovalidator server endpoints', () => {
     expect(res.status).toEqual(502);
     expect(res.type).toEqual(expect.stringContaining('json'));
     expect(res.body).toEqual({
-      error: 'Failed to load FEGA examples. GitHub unavailable'
+      error: 'Failed to load FEGA examples.'
     });
+  });
+
+  it('GET /examples preserves structured security-limit errors without exposing a stack', async () => {
+    const limitedServer = new BioValidatorServer("3032", "", {
+      securityProfile: 'compatible',
+      disableWorkers: true
+    });
+    limitedServer._configureServer()._configureEndpoints();
+    const maliciousMessage = '<script>alert(\'x"y\')</script>';
+    limitedServer.fegaExamplesClient.getExamples = jest.fn().mockRejectedValue(
+      new SecurityLimitError(maliciousMessage, {
+        code: 'EXAMPLES_LIMIT',
+        status: 502,
+        reference: maliciousMessage
+      })
+    );
+
+    const res = await supertest(limitedServer.app).get('/examples');
+
+    expect(res.status).toBe(502);
+    expect(res.body).toMatchObject({
+      error: maliciousMessage,
+      code: 'EXAMPLES_LIMIT',
+      reference: maliciousMessage
+    });
+    expect(res.body.stack).toBeUndefined();
+    expect(res.text).not.toContain(maliciousMessage);
+    expect(res.text).toContain('\\u003cscript\\u003e');
+    expect(res.text).toContain('\\u0027x\\u0022y\\u0027');
   });
 
   it('GET /cache returns the schema inventory and API cache details', async () => {
