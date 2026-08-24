@@ -193,7 +193,7 @@ export BIOVALIDATOR_LOG_DIR=./new_log_dir
 ```
 
 ### Interacting with biovalidator cache
-In server mode, Biovalidator caches compiled validators, remotely referenced schemas, and responses from external APIs. Remote/API response caches are shared across users and validation workers, they are not recreated per request. `GET /cache` reports schema inventories, bounded-cache metrics, and remote URL keys without exposing API query keys or cached bodies. `DELETE /cache` clears transient entries and accepts `scope=schemas`, `scope=api`, or `scope=all` (the default). Local schemas registered with `--ref` are configuration and are not removed.
+Biovalidator uses strict server behavior for API and remote-schema requests. It caches compiled validators, remotely referenced schemas, and responses from external APIs. API response pages are held in one bounded cache shared across users and validation workers; they are not recreated per request. `GET /cache` reports schema inventories, canonical API provider metrics, bounded remote-content metrics, and remote URL keys without exposing API query keys or cached bodies. `DELETE /cache` clears transient entries and accepts `scope=schemas`, `scope=api`, or `scope=all` (the default). It also invalidates the assembled FEGA examples payload, preventing a later request from returning data whose outbound responses were deleted. Local schemas registered with `--ref` are configuration and are not removed.
 
 The cache endpoints remain enabled by default. Set
 `BIOVALIDATOR_CACHE_ENDPOINT_ENABLED=false` to make both cache routes return

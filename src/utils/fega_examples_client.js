@@ -23,7 +23,6 @@ class FegaExamplesClient {
         }
         this.httpClient = options.httpClient || new SecureHttpClient({
             config: this.securityConfig,
-            securityProfile: "server",
             adapter: options.adapter || axios
         });
         this.cacheTtlSeconds = Number(
@@ -35,6 +34,7 @@ class FegaExamplesClient {
             this.cacheTtlSeconds = DEFAULT_CACHE_TTL_SECONDS;
         }
         this.cache = null;
+        this.cacheGeneration = 0;
     }
 
     async getExamples() {
@@ -43,9 +43,23 @@ class FegaExamplesClient {
             return this.cache.payload;
         }
 
-        const payload = await this._fetchExamples();
-        this._savePayload(payload);
-        return payload;
+        const generation = this.cacheGeneration;
+        const cacheEntries = [];
+        try {
+            const payload = await this._fetchExamples({cache: true, cacheSink: cacheEntries});
+            if (this.cacheGeneration === generation) {
+                this._savePayload(payload);
+                if (typeof this.httpClient.commitCache === "function") {
+                    this.httpClient.commitCache(cacheEntries);
+                }
+            }
+            return payload;
+        } catch (error) {
+            if (typeof this.httpClient.discardCache === "function") {
+                this.httpClient.discardCache(cacheEntries);
+            }
+            throw error;
+        }
     }
 
     /**
@@ -53,13 +67,30 @@ class FegaExamplesClient {
      * payload until the replacement has been fetched successfully.
      */
     async refreshExamples() {
-        const payload = await this._fetchExamples({cache: false});
-        this._savePayload(payload);
-        if (typeof this.httpClient.clearKind === "function") {
-            this.httpClient.clearKind("githubApi");
-            this.httpClient.clearKind("githubRaw");
+        // Bypass the shared HTTP entries, but keep successful responses in
+        // those caches. A refresh should produce a warm cache rather than
+        // leaving the endpoint's outbound inventory empty.
+        const generation = this.cacheGeneration;
+        const cacheEntries = [];
+        try {
+            const payload = await this._fetchExamples({
+                cache: true,
+                forceRefresh: true,
+                cacheSink: cacheEntries
+            });
+            if (this.cacheGeneration === generation) {
+                this._savePayload(payload);
+            }
+            if (this.cacheGeneration === generation && typeof this.httpClient.commitCache === "function") {
+                this.httpClient.commitCache(cacheEntries, {replaceKinds: ["githubApi", "githubRaw"]});
+            }
+            return payload;
+        } catch (error) {
+            if (typeof this.httpClient.discardCache === "function") {
+                this.httpClient.discardCache(cacheEntries);
+            }
+            throw error;
         }
-        return payload;
     }
 
     _savePayload(payload) {
@@ -71,10 +102,22 @@ class FegaExamplesClient {
 
     clearCache() {
         this.cache = null;
+        this.cacheGeneration += 1;
         if (typeof this.httpClient.clearKind === "function") {
             this.httpClient.clearKind("githubApi");
             this.httpClient.clearKind("githubRaw");
         }
+    }
+
+    /**
+     * Forget the assembled examples payload while leaving shared outbound
+     * responses untouched. Cache scopes clear those responses independently,
+     * so a subsequent ordinary fetch can warm only the entries that were
+     * invalidated.
+     */
+    clearPayloadCache() {
+        this.cache = null;
+        this.cacheGeneration += 1;
     }
 
     async _fetchExamples(options = {}) {
@@ -142,9 +185,12 @@ class FegaExamplesClient {
         const response = await this.httpClient.getJson(url, {
             kind: "githubApi",
             maxBytes: this.securityConfig.githubTreeMaxBytes,
-            cache: options.cache !== false
+            cache: options.cache !== false,
+            forceRefresh: options.forceRefresh === true,
+            cacheSink: options.cacheSink
         });
-        if (!response || !response.data || !Array.isArray(response.data.tree)) {
+        if (!response || (response.status !== undefined && response.status !== 200) ||
+            !response.data || !Array.isArray(response.data.tree)) {
             throw new Error("Malformed FEGA metadata schema tree response");
         }
         return {sha: typeof response.data.sha === "string" ? response.data.sha : null, tree: response.data.tree};
@@ -163,11 +209,14 @@ class FegaExamplesClient {
         const response = await this.httpClient.getJson(rawUrl, {
             kind: "githubRaw",
             maxBytes: this.securityConfig.remoteSchemaMaxBytes,
-            cache: options.cache !== false
+            cache: options.cache !== false,
+            forceRefresh: options.forceRefresh === true,
+            cacheSink: options.cacheSink
         });
         const wrapper = response && response.data;
 
-        if (!wrapper || typeof wrapper !== "object" || Array.isArray(wrapper) ||
+        if (!response || (response.status !== undefined && response.status !== 200) ||
+            !wrapper || typeof wrapper !== "object" || Array.isArray(wrapper) ||
             !Object.prototype.hasOwnProperty.call(wrapper, "schema") ||
             !Object.prototype.hasOwnProperty.call(wrapper, "data") ||
             !wrapper.schema || typeof wrapper.schema !== "object" || Array.isArray(wrapper.schema)) {

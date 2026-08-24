@@ -3,7 +3,6 @@ jest.mock("axios");
 const axios = require("axios");
 const fs = require("fs");
 const BioValidator = require("../src/core/biovalidator-core");
-const {olsCache} = require("../src/keywords/shared-cache");
 const {
     docForTerm,
     installDefaultOlsMock,
@@ -26,7 +25,6 @@ const schema = {
 describe("isValidTerm", () => {
     beforeEach(() => {
         axios.mockReset();
-        olsCache.flushAll();
     });
 
     test("accepts duplicate records with one exact IRI", async () => {

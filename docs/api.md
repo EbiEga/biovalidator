@@ -7,8 +7,8 @@ The default base URL is `http://localhost:3020/`. `BIOVALIDATOR_BASE_URL` may ad
 | `GET` | `/` | Bundled browser interface. |
 | `GET` | `/validate` | Validation request example. |
 | `POST` | `/validate` | Validate `data` against `schema`. |
-| `GET` | `/examples` | FEGA examples; `refresh=true` fetches a replacement and swaps it into the cache only after success. |
-| `GET` | `/cache` | Registered schema IDs, transient schema cache keys, and API cache metrics. |
+| `GET` | `/examples` | FEGA examples; `refresh=true` fetches a replacement, warms successful outbound responses, and swaps it into the cache only after success. |
+| `GET` | `/cache` | Registered schema IDs, schema/raw-content cache metrics, and API-response cache metrics. |
 | `DELETE` | `/cache` | Clear `all`, `schemas`, or `api` caches using the optional `scope` query parameter. The default is `all`. |
 | `GET` | `/health` | Process-local liveness, validation counters, and cache metrics. |
 
@@ -23,14 +23,59 @@ repository at the `main` branch by default. Set `FEGA_METADATA_SCHEMA_REPO` or
 
 ## Cache
 
-`GET /cache` groups in-process schema state under `schemas.registered`, `schemas.validatorID`, and `schemas.referenced`; `worker_schemas` reports the union observed in validation workers. Registered schemas come from `--ref`; `validatorID` lists cached top-level schema labels; referenced schemas were fetched remotely. `outbound` reports bounded shared-cache weights and remote URL inventory. The legacy `api` object reports per-provider counts, TTL, and lifecycle timestamps without exposing API query keys.
+`GET /cache` groups in-process schema state under `schemas.registered`, `schemas.validatorID`, and `schemas.referenced`; `worker_schemas` reports the union observed in validation workers. Registered schemas come from `--ref`; `validatorID` lists cached top-level schema labels; referenced schemas were fetched remotely. The response has two cache classes:
 
-`DELETE /cache` clears transient schema and/or API caches. Registered local schemas remain available because they are server configuration rather than cache entries.
+- `api` is the one bounded API-response cache for OLS, ENA Taxonomy, identifiers.org, and GitHub API responses. It reports counts, total weight, TTL, and lifecycle timestamps without exposing API query URLs or cached bodies.
+- `outbound.schemas` is the separate remote-content cache for referenced schemas and raw FEGA example files. It includes the remote URL inventory; `outbound.in_flight` and `outbound.outbound` report current request activity.
 
-The cache endpoints are enabled by default for compatibility with existing
-local deployments. Set `BIOVALIDATOR_CACHE_ENDPOINT_ENABLED=false` at process
-startup to leave both `GET /cache` and `DELETE /cache` unregistered; requests
-then receive `404`.
+The relevant `/cache` shape is:
+
+```json
+{
+  "api": {
+    "entries": {
+      "total": 0,
+      "ols": 0,
+      "ena_taxonomy": 0,
+      "identifiers_org": 0,
+      "github_api": 0
+    },
+    "weight_bytes": 0,
+    "providers": {}
+  },
+  "outbound": {
+    "schemas": {
+      "entries": 0,
+      "weight_bytes": 0,
+      "urls": []
+    },
+    "in_flight": 0,
+    "outbound": {
+      "active": 0,
+      "queued": 0
+    }
+  }
+}
+```
+
+The live response also includes `schemas` and, when workers are enabled,
+`worker_schemas` for schema inventories.
+
+All runtime entry points use the same strict outbound policy: HTTPS-only requests,
+fixed destinations for supported upstream services, and the configured allowlist
+for remote schemas.
+
+`DELETE /cache` clears transient schema and/or API caches. The assembled
+`/examples` payload is invalidated for every scope so a later fetch cannot
+silently reuse a payload whose outbound responses were deleted. Within the
+shared outbound cache, `scope=schemas` clears remote schema and raw GitHub
+example responses, while `scope=api` clears upstream API responses including
+the GitHub tree. Registered local schemas remain available because they are
+server configuration rather than cache entries.
+
+The cache endpoints are enabled by default for local operational visibility. Set
+`BIOVALIDATOR_CACHE_ENDPOINT_ENABLED=false` at process startup to leave both
+`GET /cache` and `DELETE /cache` unregistered; requests then receive `404`.
 
 ## Health
 
@@ -48,13 +93,14 @@ then receive `404`.
 | `validation.requests` | POST `/validate` totals: all received, 2xx successes, failed/aborted requests, and requests in flight. |
 | `validation.results` | Valid and invalid outcomes among successfully processed validations. |
 | `cache.schemas.entries` | Total current schema entries, split into compiled validators and referenced schemas. |
-| `cache.api.entries` | Total current upstream response entries, split by provider. |
-| `cache.api.providers` | Per-provider cache lifecycle details. |
-| `ttl_seconds` | Configured lifetime for entries in that cache. |
-| `last_updated_at`, `last_cleared_at` | Last observed cache write and clear times; `null` before that event occurs. |
+| `cache.api.entries` | Total current API-response entries, split into `ols`, `ena_taxonomy`, `identifiers_org`, and `github_api`. |
+| `cache.api.weight_bytes` | Total weighted size of the central API-response cache. |
+| `cache.api.providers.<provider>.entries` | Current entry count for one API provider. |
+| `cache.api.providers.<provider>.ttl_seconds` | Configured lifetime for that provider's API responses. |
+| `cache.api.providers.<provider>.last_updated_at`, `last_cleared_at` | Last API-cache write and clear times; `null` before that event occurs. |
+| `cache.api.providers.<provider>.oldest_entry_at`, `newest_entry_at` | Estimated insertion boundaries for current provider entries; `null` when empty. |
+| `cache.api.providers.<provider>.next_expiration_at` | Earliest scheduled expiration among current provider entries; `null` when none exists. |
 
-The schema and validation API cache lifetime defaults to 21,600 seconds (6 hours). Deployments can set `BIOVALIDATOR_CACHE_TTL_SECONDS` to a positive whole number of seconds; the effective value appears in `ttl_seconds`. Configuration is read at process startup. FEGA examples use the separate `FEGA_EXAMPLES_CACHE_TTL_SECONDS` setting, and forced refreshes are rate limited by `BIOVALIDATOR_EXAMPLES_REFRESH_MIN_INTERVAL_MS`.
-| `oldest_entry_at`, `newest_entry_at` | Estimated insertion boundaries for current entries; `null` when empty. |
-| `next_expiration_at` | Earliest scheduled expiration among current entries; `null` when none exists. |
+Schema, remote-content, and API-response cache entries use the `BIOVALIDATOR_CACHE_TTL_SECONDS` setting, which defaults to 21,600 seconds (6 hours). The effective value appears in the relevant `ttl_seconds` fields. Configuration is read at process startup. The assembled FEGA examples payload uses the separate `FEGA_EXAMPLES_CACHE_TTL_SECONDS` setting, and forced refreshes are rate limited by `BIOVALIDATOR_EXAMPLES_REFRESH_MIN_INTERVAL_MS`.
 
-Implementation-level lifecycle details are documented alongside the health and cache builders in [`server.js`](../src/core/server.js), [`biovalidator-core.js`](../src/core/biovalidator-core.js), and [`cache-metrics.js`](../src/utils/cache-metrics.js).
+Implementation-level details are documented in [`server.js`](../src/core/server.js), [`biovalidator-core.js`](../src/core/biovalidator-core.js), [`secure-http-client.js`](../src/utils/secure-http-client.js), [`fega_examples_client.js`](../src/utils/fega_examples_client.js), and [`cache-metrics.js`](../src/utils/cache-metrics.js).

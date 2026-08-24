@@ -42,6 +42,8 @@ class ValidationPool {
         this.cacheClearSequence = 0;
         this.cacheClearPromise = null;
         this.closed = false;
+        this.stagedOutbound = new Map();
+        this.outboundSequence = 0;
     }
 
     validate(schema, data) {
@@ -162,8 +164,19 @@ class ValidationPool {
             return;
         }
         if (message.type === "outbound") {
-            this.httpClient.getJson(message.url, message.options || {}).then((response) => {
-                this._postToLiveWorker(slot, {type: "outboundResult", requestId: message.requestId, response});
+            const options = {...(message.options || {})};
+            const cacheSink = options.deferCache ? [] : undefined;
+            delete options.deferCache;
+            if (cacheSink) {
+                options.cacheSink = cacheSink;
+            }
+            this.httpClient.getJson(message.url, options).then((response) => {
+                const cacheTokens = (cacheSink || []).map((entry) => {
+                    const token = `outbound:${++this.outboundSequence}`;
+                    this.stagedOutbound.set(token, {entry, owner: slot});
+                    return token;
+                });
+                this._postToLiveWorker(slot, {type: "outboundResult", requestId: message.requestId, response, cacheTokens});
             }).catch((error) => {
                 this._postToLiveWorker(slot, {
                     type: "outboundResult",
@@ -179,6 +192,23 @@ class ValidationPool {
                     }
                 });
             });
+            return;
+        }
+        if (message.type === "commitOutbound" || message.type === "discardOutbound") {
+            const entries = [];
+            for (const token of Array.isArray(message.tokens) ? message.tokens : []) {
+                const staged = this.stagedOutbound.get(token);
+                if (!staged || staged.owner !== slot) {
+                    continue;
+                }
+                this.stagedOutbound.delete(token);
+                if (message.type === "commitOutbound") {
+                    entries.push(staged.entry);
+                }
+            }
+            if (message.type === "commitOutbound") {
+                this.httpClient.commitCache(entries);
+            }
             return;
         }
         if (message.type === "cacheCleared") {
@@ -217,6 +247,7 @@ class ValidationPool {
             slot.job = null;
             this.jobs.delete(job.id);
             slot.intentional = true;
+            this._discardStagedOutbound(slot);
             slot.worker.terminate();
             this.workers = this.workers.filter((candidate) => candidate !== slot);
             if (slot.cacheClear) {
@@ -256,6 +287,7 @@ class ValidationPool {
         if (!this.workers.includes(slot)) {
             return;
         }
+        this._discardStagedOutbound(slot);
         this.workers = this.workers.filter((candidate) => candidate !== slot);
         if (slot.cacheClear) {
             const resolve = slot.cacheClear.resolve;
@@ -275,6 +307,14 @@ class ValidationPool {
             slot.pendingJob = null;
         }
         this._dispatch();
+    }
+
+    _discardStagedOutbound(slot) {
+        for (const [token, staged] of this.stagedOutbound) {
+            if (staged.owner === slot) {
+                this.stagedOutbound.delete(token);
+            }
+        }
     }
 
     _setWorkerInventory(slot, inventory) {
@@ -353,6 +393,7 @@ class ValidationPool {
 
     async close() {
         this.closed = true;
+        this.stagedOutbound.clear();
         for (const job of this.queue.splice(0)) {
             clearTimeout(job.queueTimer);
             job.reject(new Error("Validation worker pool closed."));

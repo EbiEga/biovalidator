@@ -3,11 +3,9 @@ jest.mock("axios");
 const axios = require("axios");
 const fs = require("fs");
 const BioValidator = require('../src/core/biovalidator-core');
-const {identifiersCache} = require('../src/keywords/shared-cache');
 
 beforeEach(() => {
     axios.mockReset();
-    identifiersCache.flushAll();
 });
 
 function resolvedIdentifierResponse() {

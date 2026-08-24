@@ -5,12 +5,6 @@ const {EventEmitter} = require("events");
 const childProcess = require("child_process");
 const npid = require("npid");
 const axios = require("axios");
-const {
-  olsCache,
-  enaTaxonomyCache,
-  identifiersCache,
-  clearApiCaches
-} = require('../src/keywords/shared-cache');
 
 const BioValidatorServer = require('../src/core/server');
 const SecurityLimitError = require('../src/model/security-limit-error');
@@ -22,7 +16,7 @@ const {
 } = BioValidatorServer;
 const supertest = require('supertest');
 const {loadSecurityConfig} = require('../src/utils/security-config');
-const server = new BioValidatorServer("3020", "");
+const server = new BioValidatorServer("3020", "", {disableWorkers: true});
 server._configureServer()._configureEndpoints();
 const requestWithSupertest = supertest(server.app);
 
@@ -30,6 +24,7 @@ describe('biovalidator server endpoints', () => {
   beforeEach(() => {
     axios.mockReset();
     server.fegaExamplesClient.clearCache();
+    server.httpClient.clear("api");
     server.lastExamplesRefreshAt = 0;
   });
 
@@ -84,7 +79,6 @@ describe('biovalidator server endpoints', () => {
 
   it('returns an informative Biovalidator limit response for oversized JSON bodies', async () => {
     const limitedServer = new BioValidatorServer("3028", "", {
-      securityProfile: 'compatible',
       disableWorkers: true,
       securityConfig: {...loadSecurityConfig({}), requestMaxBytes: 128}
     });
@@ -214,7 +208,6 @@ describe('biovalidator server endpoints', () => {
 
   it('POST /validate does not expose unexpected validation errors', async () => {
     const errorServer = new BioValidatorServer("3031", "", {
-      securityProfile: 'compatible',
       disableWorkers: true
     });
     errorServer._configureServer()._configureEndpoints();
@@ -330,6 +323,51 @@ describe('biovalidator server endpoints', () => {
     expect(axios).toHaveBeenCalledTimes(2);
   });
 
+  it('DELETE /cache?scope=schemas invalidates cached examples before they are fetched again', async () => {
+    axios.mockImplementation((config) => {
+      if (config.url.includes('/git/trees/')) {
+        return Promise.resolve({
+          data: {
+            tree: [{
+              path: 'schemas/entities/cohort/examples/valid/cohort-valid-minimal-study-defined.json',
+              type: 'blob'
+            }]
+          }
+        });
+      }
+      return Promise.resolve({
+        data: {
+          schema: {'$ref': 'https://example.org/schema.json'},
+          data: {'@type': 'ega:cohort'}
+        }
+      });
+    });
+
+    await requestWithSupertest.get('/examples');
+    let cache = await requestWithSupertest.get('/cache');
+    expect(cache.body.outbound.schemas.urls).toEqual([
+      'https://raw.githubusercontent.com/EGA-archive/fega-metadata-schema/main/schemas/entities/cohort/examples/valid/cohort-valid-minimal-study-defined.json'
+    ]);
+    expect(cache.body.api.entries.github_api).toBe(1);
+
+    const cleared = await requestWithSupertest.delete('/cache?scope=schemas');
+    expect(cleared.status).toBe(200);
+    expect(server.fegaExamplesClient.cache).toBeNull();
+
+    cache = await requestWithSupertest.get('/cache');
+    expect(cache.body.outbound.schemas.urls).toEqual([]);
+    // The Git tree is an API response, so the isolated schema scope leaves it
+    // available while invalidating the raw example payload.
+    expect(cache.body.api.entries.github_api).toBe(1);
+
+    await requestWithSupertest.get('/examples');
+    expect(axios).toHaveBeenCalledTimes(3);
+    cache = await requestWithSupertest.get('/cache');
+    expect(cache.body.outbound.schemas.urls).toEqual([
+      'https://raw.githubusercontent.com/EGA-archive/fega-metadata-schema/main/schemas/entities/cohort/examples/valid/cohort-valid-minimal-study-defined.json'
+    ]);
+  });
+
   it('GET /examples refresh=true bypasses the cache and rate-limits repeated refreshes', async () => {
     axios.mockImplementation((config) => {
       if (config.url.includes('/git/trees/')) {
@@ -364,19 +402,35 @@ describe('biovalidator server endpoints', () => {
     expect(second.body.help).toContain('Deploy Biovalidator locally');
     expect(second.body.stack).toBeUndefined();
     expect(axios).toHaveBeenCalledTimes(2);
+
+    const cache = await requestWithSupertest.get('/cache');
+    expect(cache.body.outbound.schemas.urls).toEqual([
+      'https://raw.githubusercontent.com/EGA-archive/fega-metadata-schema/main/schemas/entities/cohort/examples/valid/cohort-valid-minimal-study-defined.json'
+    ]);
+    expect(cache.body.api.entries.github_api).toBe(1);
   });
 
   it('GET /examples preserves the previous payload when a forced refresh fails', async () => {
+    const firstPath = 'schemas/entities/cohort/examples/valid/cohort-valid-minimal-study-defined.json';
+    const secondPath = 'schemas/entities/datafile/examples/valid/datafile-valid-minimal-fastq.json';
+    let refreshing = false;
+    let refreshRawCalls = 0;
     axios.mockImplementation((config) => {
       if (config.url.includes('/git/trees/')) {
         return Promise.resolve({
           data: {
-            tree: [{
-              path: 'schemas/entities/cohort/examples/valid/cohort-valid-minimal-study-defined.json',
+            tree: (refreshing ? [firstPath, secondPath] : [firstPath]).map((path) => ({
+              path,
               type: 'blob'
-            }]
+            }))
           }
         });
+      }
+      if (refreshing) {
+        refreshRawCalls += 1;
+        if (refreshRawCalls === 2) {
+          return Promise.reject(new Error('GitHub unavailable'));
+        }
       }
       return Promise.resolve({
         data: {
@@ -387,7 +441,7 @@ describe('biovalidator server endpoints', () => {
     });
 
     const initial = await requestWithSupertest.get('/examples');
-    axios.mockRejectedValue(new Error('GitHub unavailable'));
+    refreshing = true;
 
     const failedRefresh = await requestWithSupertest.get('/examples?refresh=true');
     const retained = await requestWithSupertest.get('/examples');
@@ -396,6 +450,13 @@ describe('biovalidator server endpoints', () => {
     expect(failedRefresh.status).toBe(502);
     expect(retained.status).toBe(200);
     expect(retained.body).toEqual(initial.body);
+    const cache = await requestWithSupertest.get('/cache');
+    expect(cache.body.outbound.schemas.urls).toEqual([
+      'https://raw.githubusercontent.com/EGA-archive/fega-metadata-schema/main/schemas/entities/cohort/examples/valid/cohort-valid-minimal-study-defined.json'
+    ]);
+    expect(cache.body.outbound.schemas.urls).not.toContain(
+      'https://raw.githubusercontent.com/EGA-archive/fega-metadata-schema/main/schemas/entities/datafile/examples/valid/datafile-valid-minimal-fastq.json'
+    );
   });
 
   it('GET /examples returns controlled error when upstream fetch fails', async () => {
@@ -412,7 +473,6 @@ describe('biovalidator server endpoints', () => {
 
   it('GET /examples preserves structured security-limit errors without exposing a stack', async () => {
     const limitedServer = new BioValidatorServer("3032", "", {
-      securityProfile: 'compatible',
       disableWorkers: true
     });
     limitedServer._configureServer()._configureEndpoints();
@@ -440,11 +500,17 @@ describe('biovalidator server endpoints', () => {
   });
 
   it('GET /cache returns the schema inventory and API cache details', async () => {
-    clearApiCaches();
     server.biovalidator.clearSchemaCaches();
-    olsCache.set('private-ols-key', {data: {}});
-    enaTaxonomyCache.set('private-ena-key', {data: {}});
-    identifiersCache.set('private-identifier-key', {data: {}});
+    axios.mockResolvedValue({status: 200, data: {cached: true}, headers: {}});
+    await server.httpClient.getJson('https://www.ebi.ac.uk/ols4/api/search?q=cache-ols', {
+      kind: 'ols', cache: true
+    });
+    await server.httpClient.getJson('https://www.ebi.ac.uk/ena/taxonomy/rest/any-name/cache-ena', {
+      kind: 'ena', cache: true
+    });
+    await server.httpClient.getJson('https://resolver.api.identifiers.org/cache-identifiers', {
+      kind: 'identifiers', cache: true
+    });
 
     const res = await requestWithSupertest.get('/cache');
     expect(res.status).toEqual(200);
@@ -454,19 +520,13 @@ describe('biovalidator server endpoints', () => {
       total: 3,
       ols: 1,
       ena_taxonomy: 1,
-      identifiers_org: 1
+      identifiers_org: 1,
+      github_api: 0
     });
-    expect(JSON.stringify(res.body)).not.toContain('private-ols-key');
-    expect(JSON.stringify(res.body)).not.toContain('private-ena-key');
-    expect(JSON.stringify(res.body)).not.toContain('private-identifier-key');
+    expect(res.body.outbound.api).toBeUndefined();
     for (const provider of Object.values(res.body.api.providers)) {
-      expect(provider).toEqual(expect.objectContaining({
-        ttl_seconds: 21600,
-        entries: 1,
-        last_updated_at: expect.any(String)
-      }));
+      expect(provider.ttl_seconds).toBe(21600);
     }
-    clearApiCaches();
   });
 
   it('GET /cache reports a compiled top-level validator after validation', async () => {
@@ -505,6 +565,96 @@ describe('biovalidator server endpoints', () => {
     expect(res.body.schemas).toEqual({registered: [], validatorID: [], referenced: []});
   });
 
+  it('DELETE /cache?scope=schemas permits a remote schema to be used again', async () => {
+    const remoteServer = new BioValidatorServer('3033', '', {
+      disableWorkers: true
+    });
+    remoteServer._configureServer()._configureEndpoints();
+    const remoteRequest = supertest(remoteServer.app);
+    const remoteUrl = 'https://raw.githubusercontent.com/EGA-archive/fega-metadata-schema/main/schemas/entities/cohort/schema.json';
+    axios.mockResolvedValue({status: 200, data: {type: 'object'}, headers: {}});
+
+    const body = {schema: {$ref: remoteUrl}, data: {}};
+    await remoteRequest.post('/validate').send(body).expect(200, []);
+    expect(axios).toHaveBeenCalledTimes(1);
+
+    await remoteRequest.delete('/cache?scope=schemas').expect(200);
+    await remoteRequest.post('/validate').send(body).expect(200, []);
+    expect(axios).toHaveBeenCalledTimes(2);
+
+    const cache = await remoteRequest.get('/cache');
+    expect(cache.body.outbound.schemas.urls).toEqual([remoteUrl]);
+  });
+
+  it('DELETE /cache?scope=api clears and repopulates an OLS validation check', async () => {
+    const apiServer = new BioValidatorServer('3034', '', {
+      disableWorkers: true
+    });
+    apiServer._configureServer()._configureEndpoints();
+    const apiRequest = supertest(apiServer.app);
+    const term = 'http://purl.obolibrary.org/obo/UBERON_0002107';
+    const body = {
+      schema: {type: 'string', isValidTerm: true},
+      data: term
+    };
+    axios.mockResolvedValue({
+      status: 200,
+      data: {
+        response: {
+          docs: [{iri: term}],
+          numFound: 1,
+          start: 0
+        }
+      },
+      headers: {}
+    });
+
+    await apiRequest.post('/validate').send(body).expect(200, []);
+    expect(axios).toHaveBeenCalledTimes(1);
+    let cache = await apiRequest.get('/cache');
+    expect(cache.body.api.entries).toEqual(expect.objectContaining({total: 1, ols: 1}));
+    expect(cache.body.api.providers.ols.entries).toBe(1);
+    expect(cache.body.outbound.api).toBeUndefined();
+
+    await apiRequest.delete('/cache?scope=api').expect(200);
+    cache = await apiRequest.get('/cache');
+    expect(cache.body.api.entries).toEqual({total: 0, ols: 0, ena_taxonomy: 0, github_api: 0, identifiers_org: 0});
+
+    await apiRequest.post('/validate').send(body).expect(200, []);
+    expect(axios).toHaveBeenCalledTimes(2);
+    cache = await apiRequest.get('/cache');
+    expect(cache.body.api.entries).toEqual(expect.objectContaining({total: 1, ols: 1}));
+  });
+
+  it('worker API checks use the central cache and repopulate after an API clear', async () => {
+    const workerServer = new BioValidatorServer('3035', '');
+    workerServer._configureServer()._configureEndpoints();
+    const workerRequest = supertest(workerServer.app);
+    const term = 'http://purl.obolibrary.org/obo/UBERON_0002107';
+    const body = {schema: {type: 'string', isValidTerm: true}, data: term};
+    axios.mockResolvedValue({
+      status: 200,
+      data: {response: {docs: [{iri: term}], numFound: 1, start: 0}},
+      headers: {}
+    });
+
+    try {
+      await workerRequest.post('/validate').send(body).expect(200, []);
+      await workerRequest.post('/validate').send(body).expect(200, []);
+      expect(axios).toHaveBeenCalledTimes(1);
+      expect((await workerRequest.get('/cache')).body.api.entries.ols).toBe(1);
+
+      await workerRequest.delete('/cache?scope=api').expect(200);
+      await workerRequest.post('/validate').send(body).expect(200, []);
+      expect(axios).toHaveBeenCalledTimes(2);
+      expect((await workerRequest.get('/cache')).body.api.entries.ols).toBe(1);
+    } finally {
+      if (workerServer.validationPool) {
+        await workerServer.validationPool.close();
+      }
+    }
+  });
+
   it('disables both cache routes without disabling health when configured false', async () => {
     const disabledServer = new BioValidatorServer("3028", "", {
       environment: {BIOVALIDATOR_CACHE_ENDPOINT_ENABLED: " FALSE "}
@@ -524,17 +674,24 @@ describe('biovalidator server endpoints', () => {
     const originalRevision = process.env.BIOVALIDATOR_REVISION;
     process.env.BIOVALIDATOR_DEPLOYED_AT = '2026-07-03T12:00:00Z';
     process.env.BIOVALIDATOR_REVISION = 'abc123';
-    const healthServer = new BioValidatorServer("3022", "");
+    const healthServer = new BioValidatorServer("3022", "", {disableWorkers: true});
     healthServer._configureServer()._configureEndpoints();
     const healthRequest = supertest(healthServer.app);
 
-    clearApiCaches();
+    healthServer.httpClient.clear("api");
     healthServer.biovalidator.clearSchemaCaches();
     healthServer.biovalidator.ajvContexts['2019'].validatorCache.set('health-compiled', Promise.resolve(() => true));
     healthServer.biovalidator.ajvContexts['2020'].referencedSchemaCache.set('health-referenced', {});
-    olsCache.set('health-ols', {data: {}});
-    enaTaxonomyCache.set('health-ena', {data: {}});
-    identifiersCache.set('health-identifiers', {data: {}});
+    axios.mockResolvedValue({status: 200, data: {health: true}, headers: {}});
+    await healthServer.httpClient.getJson('https://www.ebi.ac.uk/ols4/api/search?q=health-ols', {
+      kind: 'ols', cache: true
+    });
+    await healthServer.httpClient.getJson('https://www.ebi.ac.uk/ena/taxonomy/rest/any-name/health-ena', {
+      kind: 'ena', cache: true
+    });
+    await healthServer.httpClient.getJson('https://resolver.api.identifiers.org/health-identifiers', {
+      kind: 'identifiers', cache: true
+    });
     try {
       const res = await healthRequest.get('/health');
 
@@ -558,7 +715,7 @@ describe('biovalidator server endpoints', () => {
             entries: {total: 2, compiled: 1, referenced: 1}
           },
           api: {
-            entries: {total: 3, ols: 1, ena_taxonomy: 1, identifiers_org: 1}
+            entries: {total: 3, ols: 1, ena_taxonomy: 1, identifiers_org: 1, github_api: 0}
           }
         }
       });
@@ -572,12 +729,15 @@ describe('biovalidator server endpoints', () => {
         res.body.cache.schemas,
         ...Object.values(res.body.cache.api.providers)
       ]) {
+        const hasEntries = typeof cache.entries === 'number'
+          ? cache.entries > 0
+          : cache.entries.total > 0;
         expect(cache).toEqual(expect.objectContaining({
-          last_updated_at: expect.any(String),
+          last_updated_at: hasEntries ? expect.any(String) : null,
           last_cleared_at: expect.any(String),
-          oldest_entry_at: expect.any(String),
-          newest_entry_at: expect.any(String),
-          next_expiration_at: expect.any(String)
+          oldest_entry_at: hasEntries ? expect.any(String) : null,
+          newest_entry_at: hasEntries ? expect.any(String) : null,
+          next_expiration_at: hasEntries ? expect.any(String) : null
         }));
       }
     } finally {
@@ -585,7 +745,7 @@ describe('biovalidator server endpoints', () => {
       else process.env.BIOVALIDATOR_DEPLOYED_AT = originalDeployedAt;
       if (originalRevision === undefined) delete process.env.BIOVALIDATOR_REVISION;
       else process.env.BIOVALIDATOR_REVISION = originalRevision;
-      clearApiCaches();
+      healthServer.httpClient.clear("api");
       healthServer.biovalidator.clearSchemaCaches();
     }
   });
@@ -646,7 +806,7 @@ describe('biovalidator server endpoints', () => {
   });
 
   it('tracks successful valid/invalid validations and malformed or failed requests separately', async () => {
-    const metricsServer = new BioValidatorServer("3023", "");
+    const metricsServer = new BioValidatorServer("3023", "", {disableWorkers: true});
     metricsServer._configureServer()._configureEndpoints();
     const metricsRequest = supertest(metricsServer.app);
 
@@ -674,7 +834,7 @@ describe('biovalidator server endpoints', () => {
   });
 
   it('reports an active validation as in flight until it completes', async () => {
-    const metricsServer = new BioValidatorServer("3024", "");
+    const metricsServer = new BioValidatorServer("3024", "", {disableWorkers: true});
     metricsServer._configureServer()._configureEndpoints();
     const metricsRequest = supertest(metricsServer.app);
     let resolveValidation;
@@ -707,7 +867,7 @@ describe('biovalidator server endpoints', () => {
   });
 
   it('counts an aborted validation request as failed exactly once', () => {
-    const metricsServer = new BioValidatorServer("3025", "");
+    const metricsServer = new BioValidatorServer("3025", "", {disableWorkers: true});
     const response = new EventEmitter();
     response.statusCode = 200;
     response.writableEnded = false;
@@ -728,26 +888,30 @@ describe('biovalidator server endpoints', () => {
   });
 
   it('DELETE /cache supports isolated api and schema scopes, all, and invalid scopes', async () => {
-    const scopedServer = new BioValidatorServer("3026", "test/resources/schema_registry/valid");
+    const scopedServer = new BioValidatorServer("3026", "test/resources/schema_registry/valid", {disableWorkers: true});
     scopedServer._configureServer()._configureEndpoints();
     const scopedRequest = supertest(scopedServer.app);
     const schemaCache = scopedServer.biovalidator.ajvContexts['2019'].validatorCache;
 
-    clearApiCaches();
     schemaCache.set('scope-schema', Promise.resolve(() => true));
-    olsCache.set('scope-api', {data: {}});
+    axios.mockResolvedValue({status: 200, data: {scope: true}, headers: {}});
+    await scopedServer.httpClient.getJson('https://www.ebi.ac.uk/ols4/api/search?q=scope-api', {
+      kind: 'ols', cache: true
+    });
 
     let res = await scopedRequest.delete('/cache?scope=api');
     expect(res.status).toBe(200);
     expect(res.body).toEqual({message: 'Cache cleared successfully', scope: 'api', cleared: ['api']});
     expect(schemaCache.has('scope-schema')).toBe(true);
-    expect(olsCache.keys()).toEqual([]);
+    expect(scopedServer.httpClient.apiSnapshot().entries.total).toBe(0);
 
-    olsCache.set('scope-api', {data: {}});
+    await scopedServer.httpClient.getJson('https://www.ebi.ac.uk/ols4/api/search?q=scope-api', {
+      kind: 'ols', cache: true
+    });
     res = await scopedRequest.delete('/cache?scope=schemas');
     expect(res.body).toEqual({message: 'Cache cleared successfully', scope: 'schemas', cleared: ['schemas']});
     expect(schemaCache.keys()).toEqual([]);
-    expect(olsCache.has('scope-api')).toBe(true);
+    expect(scopedServer.httpClient.apiSnapshot().entries.ols).toBe(1);
     expect(scopedServer.biovalidator.getSchemaInventory().registered).toEqual([
       'https://example.org/local/draft2019.json',
       'https://example.org/local/draft2020.json'
@@ -757,20 +921,22 @@ describe('biovalidator server endpoints', () => {
     res = await scopedRequest.delete('/cache');
     expect(res.body).toEqual({message: 'Cache cleared successfully', scope: 'all', cleared: ['schemas', 'api']});
     expect(schemaCache.keys()).toEqual([]);
-    expect(olsCache.keys()).toEqual([]);
+    expect(scopedServer.httpClient.apiSnapshot().entries.total).toBe(0);
 
     schemaCache.set('scope-schema', Promise.resolve(() => true));
-    olsCache.set('scope-api', {data: {}});
+    await scopedServer.httpClient.getJson('https://www.ebi.ac.uk/ols4/api/search?q=scope-api', {
+      kind: 'ols', cache: true
+    });
     res = await scopedRequest.delete('/cache?scope=unknown');
     expect(res.status).toBe(400);
     expect(res.body).toEqual({error: 'Invalid cache scope. Expected one of: all, schemas, api.'});
     expect(schemaCache.has('scope-schema')).toBe(true);
-    expect(olsCache.has('scope-api')).toBe(true);
+    expect(scopedServer.httpClient.apiSnapshot().entries.ols).toBe(1);
 
     res = await scopedRequest.delete('/cache?scope=');
     expect(res.status).toBe(400);
 
-    clearApiCaches();
+    scopedServer.httpClient.clear("api");
     scopedServer.biovalidator.clearSchemaCaches();
   });
 

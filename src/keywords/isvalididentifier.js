@@ -12,10 +12,8 @@ class IsValidIdentifier {
         this.keywordName = "isValidIdentifier";
         this.identifiersOrgUrl = constants.IDENTIFIER_ORG_RESOLVER_URL;
         this.securityConfig = options.securityConfig || loadSecurityConfig();
-        this.sharedCacheEnabled = options.securityProfile !== "server";
         this.httpClient = options.httpClient || new SecureHttpClient({
             config: this.securityConfig,
-            securityProfile: options.securityProfile || "compatible",
             adapter: options.adapter || axios
         });
     }
@@ -44,8 +42,6 @@ class IsValidIdentifier {
     }
 
     validationFunction() {
-        const { identifiersCache } = require('./shared-cache');
-
         const generateErrorObject = (message) => {
             return new CustomAjvError(this.keywordName, message, {});
         };
@@ -99,31 +95,31 @@ class IsValidIdentifier {
                     return;
                 }
 
-                const cacheHit = this.sharedCacheEnabled && identifiersCache.has(identifier);
-                let responsePromise;
-                if (cacheHit) {
-                    responsePromise = Promise.resolve(identifiersCache.get(identifier));
-                    logger.debug("Returning cached response for identifiers.org request: " + identifier)
-                } else {
-                    const separatorIndex = identifier.indexOf(":");
-                    const identifierPath = separatorIndex === -1
-                        ? encodeURIComponent(identifier)
-                        : `${encodeURIComponent(identifier.slice(0, separatorIndex))}:` +
-                            encodeURIComponent(identifier.slice(separatorIndex + 1));
-                    responsePromise = this.httpClient.getJson(this.identifiersOrgUrl + identifierPath, {
-                        kind: "identifiers",
-                        maxBytes: this.securityConfig.apiResponseMaxBytes,
-                        cache: true
-                    });
-                }
+                const separatorIndex = identifier.indexOf(":");
+                const identifierPath = separatorIndex === -1
+                    ? encodeURIComponent(identifier)
+                    : `${encodeURIComponent(identifier.slice(0, separatorIndex))}:` +
+                        encodeURIComponent(identifier.slice(separatorIndex + 1));
+                const cacheEntries = [];
+                let cacheableResponse = false;
+                const responsePromise = this.httpClient.getJson(this.identifiersOrgUrl + identifierPath, {
+                    kind: "identifiers",
+                    maxBytes: this.securityConfig.apiResponseMaxBytes,
+                    cache: true,
+                    cacheSink: cacheEntries
+                });
 
                 responsePromise.then((response) => {
-                    if (this.sharedCacheEnabled && !cacheHit && response.status === 200) {
-                        // Cache successful upstream responses, including negative resolutions.
-                        identifiersCache.set(identifier, response);
+                    const payload = response && response.status === 200 && response.data && response.data.payload;
+                    const validResources = payload && Array.isArray(payload.resolvedResources) &&
+                        payload.resolvedResources.every((resource) => resource && typeof resource === "object" &&
+                            !Array.isArray(resource) && typeof resource.compactIdentifierResolvedUrl === "string" &&
+                            resource.compactIdentifierResolvedUrl.length > 0);
+                    if (validResources) {
+                        cacheableResponse = true;
                     }
-                    if (response.status === 200 && response.data.payload.resolvedResources.length > 0) {
-                        const resolvedUrl = response.data.payload.resolvedResources[0].compactIdentifierResolvedUrl;
+                    if (cacheableResponse && payload.resolvedResources.length > 0) {
+                        const resolvedUrl = payload.resolvedResources[0].compactIdentifierResolvedUrl;
                         logger.debug(`Returning resolved term: ${identifier} -> ${resolvedUrl}`);
                     } else {
                         errors.push(generateErrorObject(`Failed to resolve term from identifiers.org. [${response.errors}]`));
@@ -136,7 +132,12 @@ class IsValidIdentifier {
                     } else {
                         errors.push(generateErrorObject(`Failed to resolve term from identifiers.org. [${error}]`));
                     }
-                }).finally(function () {
+                }).finally(() => {
+                    if (cacheableResponse && typeof this.httpClient.commitCache === "function") {
+                        this.httpClient.commitCache(cacheEntries);
+                    } else if (!cacheableResponse && typeof this.httpClient.discardCache === "function") {
+                        this.httpClient.discardCache(cacheEntries);
+                    }
                     if (fatalError) {
                         reject(fatalError);
                     } else if (errors.length > 0) {

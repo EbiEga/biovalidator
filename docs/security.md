@@ -1,20 +1,24 @@
 # Server security controls
 
-Biovalidator's server profile accepts untrusted schemas and data while retaining remote `$ref`, OLS, ENA Taxonomy, identifiers.org, and FEGA example fetching. The controls below are deployment limits, not JSON Schema semantics. A limit rejection contains a stable `code`, the relevant `configuration`, and guidance for running a separately configured local deployment.
+Biovalidator accepts untrusted schemas and data while retaining allowlisted remote `$ref`, OLS, ENA Taxonomy, identifiers.org, and FEGA example fetching. The controls below are deployment limits, not JSON Schema semantics. A limit rejection contains a stable `code`, the relevant `configuration`, and guidance for running a separately configured deployment.
+
+All runtime entry points use the same strict outbound policy: HTTPS-only
+requests, fixed destinations for supported upstream services, and the
+configured allowlist for remote schemas.
 
 ## Outbound requests
 
 Server-side remote `$ref` requests must use credential-free HTTPS on port 443 and match an exact URL prefix in `BIOVALIDATOR_REMOTE_REF_ALLOWLIST`. The default is `https://raw.githubusercontent.com/`. Literal IP addresses, redirects, non-HTTP protocols, and lookalike hostnames are rejected. OLS, ENA Taxonomy, identifiers.org, and the GitHub API use fixed destinations from the application rather than user-selected hosts.
 
-Remote schemas are still supported. Responses are fetched, compiled, and cached by URL; compiled root schemas are cached by a canonical SHA-256 content digest. Local `--ref` registrations take authoritative precedence. A submitted inline schema cannot replace a local or previously verified remote `$id` with different content. If a remote document declares a different URL as its `$id`, the server fetches that canonical URL and requires its content to match before reserving the identifier. Local and outbound response caches are shared between users. Production validation workers keep their compiled caches locally, with content affinity routing repeat uses to a warm idle worker when possible.
+Remote schemas are supported. Responses are fetched, compiled, and cached by URL; compiled root schemas are cached by a canonical SHA-256 content digest. Local `--ref` registrations take authoritative precedence. A submitted inline schema cannot replace a local or previously verified remote `$id` with different content. If a remote document declares a different URL as its `$id`, the server fetches that canonical URL and requires its content to match before reserving the identifier. The API-response and remote-content caches are shared by the server and its validation workers within one server instance. Validation workers keep their compiled schema caches locally, with content affinity routing repeat uses to a warm idle worker when possible.
 
 The browser UI uses a per-response CSP nonce for CodeMirror's runtime-generated stylesheet. HTML UI responses are not cached so the nonce in the document always matches the nonce in the response policy; no general inline-style allowance is enabled.
 
-Use repeatable `--remoteRef URL` arguments to fetch and compile important allowlisted schemas before the HTTP listener starts. This warms the shared response cache. Local schemas supplied with `--ref` are loaded and registered at startup and remain available through their `$id`.
+Use repeatable `--remoteRef URL` arguments to fetch and compile important allowlisted schemas before the HTTP listener starts. This warms the shared remote-content cache. Local schemas supplied with `--ref` are loaded and registered at startup and remain available through their `$id`.
 
 ## Cache endpoint exposure
 
-`GET /cache` includes schema identifiers and a bounded remote URL inventory, and `DELETE /cache` changes process-wide transient cache state. They remain enabled by default for compatibility with local deployments. Public deployments should either hide these behind authorisation or set `BIOVALIDATOR_CACHE_ENDPOINT_ENABLED=false`. Disabling them removes both routes while keeping `/health` available.
+`GET /cache` exposes schema identifiers, remote-content URL inventory, and aggregate API-cache metadata (counts, weights, TTLs, and lifecycle timestamps). It does not expose API query URLs or cached response bodies. `DELETE /cache` changes transient cache state for the server instance: `scope=api` clears API responses, `scope=schemas` clears referenced schemas and raw FEGA files, and `scope=all` clears both. Every scope also invalidates the assembled FEGA examples payload. The routes are enabled by default for local operational visibility. Public deployments should either hide these behind authorisation or set `BIOVALIDATOR_CACHE_ENDPOINT_ENABLED=false`. Disabling them removes both routes while keeping `/health` available.
 
 ## Default limits
 

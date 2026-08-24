@@ -1,7 +1,6 @@
 jest.mock("axios");
 
 const axios = require("axios");
-const {olsCache} = require("../src/keywords/shared-cache");
 const {
     OlsSearchClient,
     OlsSearchError,
@@ -12,7 +11,6 @@ const {docForTerm, olsResponse} = require("./olsTestUtils");
 describe("OlsSearchClient", () => {
     beforeEach(() => {
         axios.mockReset();
-        olsCache.flushAll();
     });
 
     test("filters unrelated records before deduplicating by IRI", async () => {
@@ -28,9 +26,9 @@ describe("OlsSearchClient", () => {
         ).resolves.toBe("http://purl.obolibrary.org/obo/BFO_0000040");
     });
 
-    test("retains legacy custom endpoint injection without relying on its q parameter", async () => {
+    test("uses the strict canonical OLS endpoint without relying on its q parameter", async () => {
         axios.mockResolvedValue(olsResponse([docForTerm("BFO:0000040")]));
-        const client = new OlsSearchClient("https://example.org/custom/search?q=");
+        const client = new OlsSearchClient();
 
         await client.resolveUniqueIri("BFO:0000040", ["obo_id"], {
             groupField: true,
@@ -39,9 +37,7 @@ describe("OlsSearchClient", () => {
 
         const request = axios.mock.calls[0][0];
         const requestedUrl = new URL(request.url);
-        expect(requestedUrl.origin + requestedUrl.pathname).toBe(
-            "https://example.org/custom/search"
-        );
+        expect(requestedUrl.origin + requestedUrl.pathname).toBe("https://www.ebi.ac.uk/ols4/api/search");
         expect(requestedUrl.searchParams.get("q")).toBe("BFO:0000040");
         expect(requestedUrl.searchParams.get("groupField")).toBeNull();
         expect(requestedUrl.searchParams.get("queryFields")).toBeNull();
@@ -71,6 +67,7 @@ describe("OlsSearchClient", () => {
         );
 
         expect(axios).toHaveBeenCalledTimes(2);
+        expect(client.httpClient.apiSnapshot().entries.ols).toBe(2);
     });
 
     test.each([
@@ -87,7 +84,7 @@ describe("OlsSearchClient", () => {
                 message: expect.stringContaining(message)
             })
         );
-        expect([...olsCache.keys()].filter((key) => key.startsWith("ols-search:"))).toHaveLength(0);
+        expect(client.httpClient.apiSnapshot().entries.ols).toBe(0);
     });
 
     test("wraps network failures with the searched term", async () => {
