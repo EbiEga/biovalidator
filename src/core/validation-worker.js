@@ -23,6 +23,9 @@ class ParentHttpClient {
                     : Object.assign(new Error(message.error.message), message.error);
                 pending.reject(error);
             } else {
+                if (pending.cacheSink && Array.isArray(message.cacheTokens)) {
+                    pending.cacheSink.push(...message.cacheTokens.map((token) => ({__cacheToken: token})));
+                }
                 pending.resolve(message.response);
             }
         });
@@ -31,7 +34,7 @@ class ParentHttpClient {
     getJson(url, options = {}) {
         const requestId = ++this.sequence;
         return new Promise((resolve, reject) => {
-            this.pending.set(requestId, {resolve, reject});
+            this.pending.set(requestId, {resolve, reject, cacheSink: options.cacheSink});
             parentPort.postMessage({
                 type: "outbound",
                 requestId,
@@ -39,10 +42,30 @@ class ParentHttpClient {
                 options: {
                     kind: options.kind,
                     maxBytes: options.maxBytes,
-                    cache: options.cache
+                    cache: options.cache,
+                    forceRefresh: options.forceRefresh,
+                    deferCache: Array.isArray(options.cacheSink)
                 }
             });
         });
+    }
+
+    commitCache(entries = []) {
+        const tokens = entries
+            .map((entry) => entry && entry.__cacheToken)
+            .filter((token) => typeof token === "string");
+        if (tokens.length > 0) {
+            parentPort.postMessage({type: "commitOutbound", tokens});
+        }
+    }
+
+    discardCache(entries = []) {
+        const tokens = entries
+            .map((entry) => entry && entry.__cacheToken)
+            .filter((token) => typeof token === "string");
+        if (tokens.length > 0) {
+            parentPort.postMessage({type: "discardOutbound", tokens});
+        }
     }
 }
 
@@ -60,7 +83,6 @@ function serializeError(error) {
 }
 
 const validator = new BioValidator(workerData.localSchemaPath, {
-    securityProfile: "server",
     securityConfig: workerData.securityConfig,
     httpClient: new ParentHttpClient()
 });

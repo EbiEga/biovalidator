@@ -1,5 +1,4 @@
 const axios = require("axios");
-const {olsCache} = require("../keywords/shared-cache");
 const constants = require("./constants");
 const {loadSecurityConfig} = require("./security-config");
 const {SecureHttpClient} = require("./secure-http-client");
@@ -33,57 +32,57 @@ class OlsSearchClient {
     constructor(searchUrl, options = {}) {
         this.searchUrl = searchUrl || constants.OLS_SEARCH_URL;
         this.securityConfig = options.securityConfig || loadSecurityConfig();
-        this.sharedCacheEnabled = options.securityProfile !== "server";
         this.httpClient = options.httpClient || new SecureHttpClient({
             config: this.securityConfig,
-            securityProfile: options.securityProfile || "compatible",
             adapter: options.adapter || axios
         });
     }
 
     async search(term, filters = {}) {
         const baseUrl = this._buildUrl(term, filters);
-        const cacheKey = `ols-search:${baseUrl.toString()}`;
+        const cacheEntries = [];
+        try {
+            const docs = [];
+            let expectedTotal = null;
+            let start = 0;
 
-        if (this.sharedCacheEnabled && olsCache.has(cacheKey)) {
-            return olsCache.get(cacheKey);
+            do {
+                const pageUrl = new URL(baseUrl.toString());
+                pageUrl.searchParams.set("start", String(start));
+
+                const page = await this._fetchPage(term, pageUrl, start, cacheEntries);
+                if (expectedTotal === null) {
+                    expectedTotal = page.numFound;
+                } else if (page.numFound !== expectedTotal) {
+                    throw new OlsSearchError(term, "result count changed during pagination");
+                }
+
+                if (page.docs.length === 0 && docs.length < expectedTotal) {
+                    throw new OlsSearchError(
+                        term,
+                        `incomplete paginated response: received ${docs.length} of ${expectedTotal} records`
+                    );
+                }
+
+                docs.push(...page.docs);
+                start += page.docs.length;
+
+                if (docs.length > expectedTotal) {
+                    throw new OlsSearchError(term, "malformed response returned more records than numFound");
+                }
+            } while (docs.length < expectedTotal);
+
+            const result = {docs, numFound: expectedTotal};
+            if (typeof this.httpClient.commitCache === "function") {
+                this.httpClient.commitCache(cacheEntries);
+            }
+            return result;
+        } catch (error) {
+            if (typeof this.httpClient.discardCache === "function") {
+                this.httpClient.discardCache(cacheEntries);
+            }
+            throw error;
         }
-
-        const docs = [];
-        let expectedTotal = null;
-        let start = 0;
-
-        do {
-            const pageUrl = new URL(baseUrl.toString());
-            pageUrl.searchParams.set("start", String(start));
-
-            const page = await this._fetchPage(term, pageUrl, start);
-            if (expectedTotal === null) {
-                expectedTotal = page.numFound;
-            } else if (page.numFound !== expectedTotal) {
-                throw new OlsSearchError(term, "result count changed during pagination");
-            }
-
-            if (page.docs.length === 0 && docs.length < expectedTotal) {
-                throw new OlsSearchError(
-                    term,
-                    `incomplete paginated response: received ${docs.length} of ${expectedTotal} records`
-                );
-            }
-
-            docs.push(...page.docs);
-            start += page.docs.length;
-
-            if (docs.length > expectedTotal) {
-                throw new OlsSearchError(term, "malformed response returned more records than numFound");
-            }
-        } while (docs.length < expectedTotal);
-
-        const result = {docs, numFound: expectedTotal};
-        if (this.sharedCacheEnabled) {
-            olsCache.set(cacheKey, result);
-        }
-        return result;
     }
 
     async findExactMatches(term, fields, filters = {}) {
@@ -142,13 +141,14 @@ class OlsSearchClient {
         return url;
     }
 
-    async _fetchPage(term, url, requestedStart) {
+    async _fetchPage(term, url, requestedStart, cacheSink) {
         let response;
         try {
             response = await this.httpClient.getJson(url.toString(), {
                 kind: "ols",
                 maxBytes: this.securityConfig.apiResponseMaxBytes,
-                cache: true
+                cache: true,
+                cacheSink
             });
         } catch (error) {
             if (error instanceof SecurityLimitError || error && error.name === "SecurityLimitError") {

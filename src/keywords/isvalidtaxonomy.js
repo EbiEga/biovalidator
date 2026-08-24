@@ -14,10 +14,8 @@ class IsValidTaxonomy {
     constructor(keywordName, options = {}) {
         this.keywordName = keywordName ? keywordName : "isValidTaxonomy";
         this.securityConfig = options.securityConfig || loadSecurityConfig();
-        this.sharedCacheEnabled = options.securityProfile !== "server";
         this.httpClient = options.httpClient || new SecureHttpClient({
             config: this.securityConfig,
-            securityProfile: options.securityProfile || "compatible",
             adapter: options.adapter || axios
         });
     }
@@ -45,7 +43,6 @@ class IsValidTaxonomy {
     }
 
     generateKeywordFunction() {
-        const { enaTaxonomyCache } = require('./shared-cache');
         return (schema, data) => {
             return new Promise((resolve, reject) => {
                 if (schema) {
@@ -67,29 +64,26 @@ class IsValidTaxonomy {
                     }
                     const encodedTaxonomyUri = encodeURIComponent(taxonomyExpression);
                     const url = [taxonomySearchUrl, encodedTaxonomyUri].join("/");
+                    const cacheEntries = [];
+                    let cacheableResponse = false;
 
                     logger.log("debug", `Looking for taxonomy [${taxonomyExpression}] with ENA taxonomy validator.`);
 
-                    const cacheHit = this.sharedCacheEnabled && enaTaxonomyCache.has(url);
-                    let taxonomyPromise;
-                    if (cacheHit) {
-                        taxonomyPromise = Promise.resolve(enaTaxonomyCache.get(url));
-                        logger.debug("Returning cached response for ENA taxonomy request: " + url);
-                    } else {
-                        taxonomyPromise = this.httpClient.getJson(url, {
-                            kind: "ena",
-                            maxBytes: this.securityConfig.apiResponseMaxBytes,
-                            cache: true
-                        });
-                    }
+                    const taxonomyPromise = this.httpClient.getJson(url, {
+                        kind: "ena",
+                        maxBytes: this.securityConfig.apiResponseMaxBytes,
+                        cache: true,
+                        cacheSink: cacheEntries
+                    });
 
                     taxonomyPromise
                         .then((response) => {
-                            if (response.status === 200 && response.data) {
-                                if (this.sharedCacheEnabled && !cacheHit) {
-                                    // Store successful upstream responses without extending TTL on cache hits.
-                                    enaTaxonomyCache.set(url, response);
-                                }
+                            const validRows = response.status === 200 && Array.isArray(response.data) &&
+                                response.data.every((row) => row && typeof row === "object" && !Array.isArray(row) &&
+                                    (typeof row.taxId === "string" || typeof row.taxId === "number") &&
+                                    typeof row.submittable === "string");
+                            if (validRows) {
+                                cacheableResponse = true;
                                 let numFound = response.data.length;
 
                                 if (numFound === 1 && response.data[0]["taxId"] && response.data[0]["submittable"] === "true") {
@@ -126,6 +120,11 @@ class IsValidTaxonomy {
                             );
                         })
                         .finally(() => {
+                            if (cacheableResponse && typeof this.httpClient.commitCache === "function") {
+                                this.httpClient.commitCache(cacheEntries);
+                            } else if (!cacheableResponse && typeof this.httpClient.discardCache === "function") {
+                                this.httpClient.discardCache(cacheEntries);
+                            }
                             if (fatalError) {
                                 reject(fatalError);
                             } else if (errors.length > 0) {

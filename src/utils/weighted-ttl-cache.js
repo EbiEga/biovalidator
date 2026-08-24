@@ -41,11 +41,13 @@ class WeightedTtlCache {
             this.totalWeight -= existing.weight;
             this.entries.delete(key);
         }
+        const createdAt = Date.now();
         this.entries.set(key, {
             value,
             weight,
             pinned,
-            expiresAt: pinned || this.ttlMs === 0 ? 0 : Date.now() + this.ttlMs
+            createdAt,
+            expiresAt: pinned || this.ttlMs === 0 ? 0 : createdAt + this.ttlMs
         });
         this.totalWeight += weight;
         this._evict();
@@ -95,6 +97,22 @@ class WeightedTtlCache {
             this._deleteExpired(key, entry);
         }
         return [...this.entries.keys()];
+    }
+
+    /**
+     * Return lifecycle metadata without exposing the cached value. Expired
+     * entries are removed before their metadata is returned.
+     */
+    getEntryInfo(key) {
+        const entry = this.entries.get(key);
+        if (!entry || this._deleteExpired(key, entry)) {
+            return undefined;
+        }
+        return {
+            weight: entry.weight,
+            createdAt: entry.createdAt,
+            expiresAt: entry.expiresAt
+        };
     }
 
     get size() {

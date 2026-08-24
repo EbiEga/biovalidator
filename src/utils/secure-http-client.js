@@ -15,6 +15,13 @@ const FIXED_DESTINATIONS = Object.freeze({
     githubRaw: [{origin: "https://raw.githubusercontent.com", pathname: "/"}]
 });
 
+const API_PROVIDER_NAMES = Object.freeze({
+    ols: "ols",
+    ena: "ena_taxonomy",
+    identifiers: "identifiers_org",
+    githubApi: "github_api"
+});
+
 function pathMatches(candidate, allowed) {
     if (allowed === "/") {
         return true;
@@ -23,7 +30,7 @@ function pathMatches(candidate, allowed) {
     return candidate === allowed || candidate.startsWith(prefix);
 }
 
-function parseAndValidateUrl(rawUrl, kind, securityProfile, config) {
+function parseAndValidateUrl(rawUrl, kind, config) {
     let parsed;
     try {
         parsed = new URL(rawUrl);
@@ -45,16 +52,6 @@ function parseAndValidateUrl(rawUrl, kind, securityProfile, config) {
             code: "OUTBOUND_URL_PATH_INVALID",
             status: 422
         });
-    }
-
-    if (securityProfile !== "server") {
-        if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-            throw new SecurityLimitError(
-                `Biovalidator supports only HTTP(S) remote schemas; received '${parsed.protocol}'.`,
-                {code: "REMOTE_SCHEMA_PROTOCOL_DENIED", status: 422}
-            );
-        }
-        return parsed;
     }
 
     if (parsed.protocol !== "https:" || (parsed.port && parsed.port !== "443") || net.isIP(parsed.hostname)) {
@@ -124,7 +121,6 @@ class WorkConservingSemaphore {
 class SecureHttpClient {
     constructor(options = {}) {
         this.config = options.config || loadSecurityConfig();
-        this.securityProfile = options.securityProfile || "compatible";
         this.adapter = options.adapter || axios;
         this.semaphore = options.semaphore || new WorkConservingSemaphore(this.config.outboundConcurrency);
         this.inFlight = new Map();
@@ -139,19 +135,29 @@ class SecureHttpClient {
             maxWeight: this.config.apiCacheMaxBytes,
             ttlMs
         });
+        // A clear invalidates both entries already stored and responses that
+        // are still in flight. The latter must not repopulate a cache after a
+        // successful DELETE /cache response.
+        this.cacheGenerations = new Map();
+        this.apiLifecycle = new Map(Object.keys(API_PROVIDER_NAMES).map((kind) => [kind, {
+            lastUpdatedAt: null,
+            lastClearedAt: null
+        }]));
     }
 
     async getJson(rawUrl, options = {}) {
         const kind = options.kind || "remoteSchema";
-        const parsed = parseAndValidateUrl(rawUrl, kind, this.securityProfile, this.config);
+        const parsed = parseAndValidateUrl(rawUrl, kind, this.config);
         parsed.hash = "";
         const url = parsed.toString();
         const maxBytes = options.maxBytes || this._maxBytesFor(kind);
         const cache = kind === "remoteSchema" || kind === "githubRaw" ? this.remoteCache : this.apiCache;
         const cacheKey = `${kind}:${url}`;
         const useCache = options.cache === true;
+        const forceRefresh = options.forceRefresh === true;
+        const generation = this._cacheGeneration(kind);
 
-        if (useCache) {
+        if (useCache && !forceRefresh) {
             const cached = cache.get(cacheKey);
             if (cached !== undefined) {
                 const observed = cached.sizeBytes || approximateBytes(cached.data);
@@ -171,13 +177,22 @@ class SecureHttpClient {
         }
         try {
             const response = await request;
-            if (useCache) {
-                cache.set(cacheKey, response, {weight: response.sizeBytes || approximateBytes(response.data)});
+            if (useCache && this._cacheGeneration(kind) === generation) {
+                if (options.cacheSink && typeof options.cacheSink.push === "function") {
+                    options.cacheSink.push({kind, url, response, generation});
+                } else {
+                    cache.set(cacheKey, response, {weight: response.sizeBytes || approximateBytes(response.data)});
+                    this._recordApiSet(kind);
+                }
             }
             return response;
         } finally {
             if (useCache) {
-                this.inFlight.delete(cacheKey);
+                // A forced refresh can replace a prior request for the same
+                // URL. Only the current request may remove the map entry.
+                if (this.inFlight.get(cacheKey) === request) {
+                    this.inFlight.delete(cacheKey);
+                }
             }
         }
     }
@@ -269,28 +284,182 @@ class SecureHttpClient {
     }
 
     clear(scope = "all") {
+        const shouldClearKind = (kind) => (
+            scope === "all" ||
+            (scope === "schemas" && (kind === "remoteSchema" || kind === "githubRaw")) ||
+            (scope === "api" && kind !== "remoteSchema" && kind !== "githubRaw")
+        );
+        const kinds = this._kindsForScope(scope);
+        this._invalidateInFlight(shouldClearKind);
+        this._bumpGenerations(kinds);
         if (scope === "all" || scope === "schemas") {
             this.remoteCache.clear();
         }
         if (scope === "all" || scope === "api") {
             this.apiCache.clear();
+            this._recordApiClear(kinds);
         }
     }
 
     clearKind(kind) {
-        const cache = kind === "remoteSchema" || kind === "githubRaw" ? this.remoteCache : this.apiCache;
         const prefix = `${kind}:`;
+        this._invalidateInFlight((candidate) => candidate === kind);
+        this._bumpGenerations([kind]);
+        const cache = kind === "remoteSchema" || kind === "githubRaw" ? this.remoteCache : this.apiCache;
         for (const key of cache.keys()) {
             if (key.startsWith(prefix)) {
                 cache.delete(key);
             }
         }
+        this._recordApiClear([kind]);
+    }
+
+    /**
+     * Commit responses collected by a caller that needs an all-or-nothing
+     * refresh. Entries fetched before a cache clear are discarded by the
+     * generation check, while entries fetched after it remain valid.
+     */
+    commitCache(entries = [], options = {}) {
+        const replaceKinds = new Set(Array.isArray(options.replaceKinds) ? options.replaceKinds : []);
+        if (replaceKinds.size > 0) {
+            const retainedKeys = new Set(entries
+                .filter((entry) => entry && typeof entry.kind === "string" && replaceKinds.has(entry.kind) &&
+                    typeof entry.url === "string")
+                .map((entry) => `${entry.kind}:${entry.url}`));
+            for (const kind of replaceKinds) {
+                const cache = kind === "remoteSchema" || kind === "githubRaw"
+                    ? this.remoteCache
+                    : this.apiCache;
+                for (const key of cache.keys()) {
+                    if (key.startsWith(`${kind}:`) && !retainedKeys.has(key)) {
+                        cache.delete(key);
+                    }
+                }
+            }
+        }
+        for (const entry of entries) {
+            if (!entry || typeof entry.kind !== "string" || typeof entry.url !== "string" ||
+                !entry.response || this._cacheGeneration(entry.kind) !== entry.generation) {
+                continue;
+            }
+            const cache = entry.kind === "remoteSchema" || entry.kind === "githubRaw"
+                ? this.remoteCache
+                : this.apiCache;
+            const cacheKey = `${entry.kind}:${entry.url}`;
+            const response = entry.response;
+            cache.set(cacheKey, response, {
+                weight: response.sizeBytes || approximateBytes(response.data)
+            });
+            this._recordApiSet(entry.kind);
+        }
+    }
+
+    // Entries collected through cacheSink are not resident until commitCache;
+    // discarding them therefore only needs to release the caller's references.
+    discardCache(_entries = []) {}
+
+    _cacheGeneration(kind) {
+        return this.cacheGenerations.get(kind) || 0;
+    }
+
+    _invalidateInFlight(predicate) {
+        const invalidatedKinds = new Set();
+        for (const key of this.inFlight.keys()) {
+            const separator = key.indexOf(":");
+            const kind = separator === -1 ? key : key.slice(0, separator);
+            if (predicate(kind)) {
+                this.inFlight.delete(key);
+                invalidatedKinds.add(kind);
+            }
+        }
+        return invalidatedKinds;
+    }
+
+    _kindsForScope(scope) {
+        if (scope === "schemas") {
+            return ["remoteSchema", "githubRaw"];
+        }
+        if (scope === "api") {
+            return Object.keys(API_PROVIDER_NAMES);
+        }
+        return ["remoteSchema", "githubRaw", ...Object.keys(API_PROVIDER_NAMES)];
+    }
+
+    _bumpGenerations(kinds) {
+        for (const kind of kinds) {
+            this.cacheGenerations.set(kind, this._cacheGeneration(kind) + 1);
+        }
+    }
+
+    _recordApiSet(kind) {
+        if (this.apiLifecycle.has(kind)) {
+            this.apiLifecycle.get(kind).lastUpdatedAt = Date.now();
+        }
+    }
+
+    _recordApiClear(kinds) {
+        const now = Date.now();
+        for (const kind of kinds) {
+            if (this.apiLifecycle.has(kind)) {
+                this.apiLifecycle.get(kind).lastClearedAt = now;
+            }
+        }
+    }
+
+    _apiProviderSnapshot(kind) {
+        const prefix = `${kind}:`;
+        const entries = [];
+        for (const key of this.apiCache.keys()) {
+            if (!key.startsWith(prefix)) {
+                continue;
+            }
+            const info = this.apiCache.getEntryInfo(key);
+            if (info) {
+                entries.push(info);
+            }
+        }
+        const expirations = entries.map((entry) => entry.expiresAt).filter((value) => value > 0);
+        const lifecycle = this.apiLifecycle.get(kind) || {lastUpdatedAt: null, lastClearedAt: null};
+        return {
+            ttl_seconds: this.apiCache.ttlMs / 1000,
+            entries: entries.length,
+            last_updated_at: lifecycle.lastUpdatedAt === null ? null : new Date(lifecycle.lastUpdatedAt).toISOString(),
+            last_cleared_at: lifecycle.lastClearedAt === null ? null : new Date(lifecycle.lastClearedAt).toISOString(),
+            oldest_entry_at: entries.length
+                ? new Date(Math.min(...entries.map((entry) => entry.createdAt))).toISOString()
+                : null,
+            newest_entry_at: entries.length
+                ? new Date(Math.max(...entries.map((entry) => entry.createdAt))).toISOString()
+                : null,
+            next_expiration_at: expirations.length
+                ? new Date(Math.min(...expirations)).toISOString()
+                : null
+        };
+    }
+
+    apiSnapshot() {
+        const providers = Object.fromEntries(Object.entries(API_PROVIDER_NAMES)
+            .map(([kind, provider]) => [provider, this._apiProviderSnapshot(kind)]));
+        const entries = Object.fromEntries(Object.entries(providers)
+            .map(([provider, snapshot]) => [provider, snapshot.entries]));
+        entries.total = Object.values(providers).reduce((total, provider) => total + provider.entries, 0);
+        const orderedEntries = {
+            total: entries.total,
+            ols: entries.ols,
+            ena_taxonomy: entries.ena_taxonomy,
+            identifiers_org: entries.identifiers_org,
+            github_api: entries.github_api
+        };
+        return {
+            entries: orderedEntries,
+            weight_bytes: this.apiCache.snapshot().weight_bytes,
+            providers
+        };
     }
 
     snapshot() {
         return {
             schemas: {...this.remoteCache.snapshot(), urls: this._cacheUrls(this.remoteCache)},
-            api: this.apiCache.snapshot(),
             in_flight: this.inFlight.size,
             outbound: {active: this.semaphore.active, queued: this.semaphore.waiting.length}
         };

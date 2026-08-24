@@ -2,13 +2,11 @@ jest.mock("axios");
 
 const axios = require("axios");
 const CurieExpansion = require("../src/utils/curie_expansion");
-const {olsCache} = require("../src/keywords/shared-cache");
 const {docForTerm, olsResponse} = require("./olsTestUtils");
 
 describe("CurieExpansion", () => {
     beforeEach(() => {
         axios.mockReset();
-        olsCache.flushAll();
     });
 
     test("recognizes CURIE syntax", () => {

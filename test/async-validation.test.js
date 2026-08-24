@@ -3,16 +3,15 @@ jest.mock("axios");
 const fs = require("fs");
 const axios = require("axios");
 const BioValidator = require("../src/core/biovalidator-core")
-const {olsCache} = require("../src/keywords/shared-cache");
 const {installDefaultOlsMock} = require("./olsTestUtils");
-const biovalidator = new BioValidator();
+let biovalidator;
 
 beforeEach(() => {
   axios.mockReset();
-  olsCache.flushAll();
   installDefaultOlsMock(axios, {
     notFoundTerms: ["http://purl.obolibrary.org/obo/UO_0000033"]
   });
+  biovalidator = new BioValidator();
 });
 
 test(" -> isChildTermOf Schema", () => {

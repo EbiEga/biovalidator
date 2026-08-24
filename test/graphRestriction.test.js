@@ -4,7 +4,6 @@ const axios = require("axios");
 const fs = require("fs");
 const BioValidator = require("../src/core/biovalidator-core");
 const GraphRestriction = require("../src/keywords/graphRestriction");
-const {olsCache} = require("../src/keywords/shared-cache");
 const {
     docForTerm,
     installDefaultOlsMock,
@@ -14,7 +13,6 @@ const {
 describe("graphRestriction", () => {
     beforeEach(() => {
         axios.mockReset();
-        olsCache.flushAll();
     });
 
     test("passes an exact child CURIE", async () => {
