@@ -3,10 +3,6 @@ include:
   - template: Jobs/Dependency-Scanning.gitlab-ci.yml
   - template: Jobs/Secret-Detection.gitlab-ci.yml
 
-image: docker:24
-services:
-  - docker:24-dind
-
 stages:
   - test
   - build-containers
@@ -35,6 +31,14 @@ node-test:
 
 docker-build:
   stage: build-containers
+  image: docker:24.0.9-cli
+  services:
+    - name: docker:24.0.9-dind
+      alias: docker
+  variables:
+    DOCKER_DRIVER: overlay2
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
   needs: ["node-test"]
   script:
     - echo "$CI_REGISTRY_PASSWORD" | docker login dockerhub.ebi.ac.uk -u "$CI_REGISTRY_USER" --password-stdin
