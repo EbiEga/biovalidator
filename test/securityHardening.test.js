@@ -21,7 +21,7 @@ describe("server security hardening", () => {
         "https://user:secret@raw.githubusercontent.com/owner/repo/main/schema.json",
         "file:///etc/passwd"
     ])("rejects unsafe server-side remote reference %s", (url) => {
-        expect(() => parseAndValidateUrl(url, "remoteSchema", "server", config))
+        expect(() => parseAndValidateUrl(url, "remoteSchema", config))
             .toThrow(SecurityLimitError);
     });
 
@@ -29,7 +29,6 @@ describe("server security hardening", () => {
         expect(parseAndValidateUrl(
             "https://raw.githubusercontent.com/EGA-archive/fega-metadata-schema/main/schemas/common/schema.json",
             "remoteSchema",
-            "server",
             config
         ).hostname).toBe("raw.githubusercontent.com");
     });
@@ -40,7 +39,7 @@ describe("server security hardening", () => {
             data: {payload: "x".repeat(100)},
             headers: {}
         });
-        const client = new SecureHttpClient({config, securityProfile: "server", adapter});
+        const client = new SecureHttpClient({config, adapter});
 
         await expect(client.getJson(
             "https://raw.githubusercontent.com/owner/repo/main/schema.json",
@@ -51,13 +50,43 @@ describe("server security hardening", () => {
 
     test("shares cached outbound content across calls", async () => {
         const adapter = jest.fn().mockResolvedValue({status: 200, data: {type: "string"}, headers: {}});
-        const client = new SecureHttpClient({config, securityProfile: "server", adapter});
+        const client = new SecureHttpClient({config, adapter});
         const url = "https://raw.githubusercontent.com/owner/repo/main/schema.json";
 
         await client.getJson(url, {kind: "remoteSchema", cache: true});
         await client.getJson(url, {kind: "remoteSchema", cache: true});
 
         expect(adapter).toHaveBeenCalledTimes(1);
+        expect(client.snapshot().schemas.urls).toEqual([url]);
+    });
+
+    test("does not repopulate a cleared cache when an old outbound request finishes", async () => {
+        let resolveRequest;
+        let requestCount = 0;
+        const adapter = jest.fn(() => {
+            requestCount += 1;
+            if (requestCount > 1) {
+                return Promise.resolve({status: 200, data: {type: "string"}, headers: {}});
+            }
+            return new Promise((resolve) => {
+                resolveRequest = resolve;
+            });
+        });
+        const client = new SecureHttpClient({config, adapter});
+        const url = "https://raw.githubusercontent.com/owner/repo/main/schema.json";
+
+        const pending = client.getJson(url, {kind: "remoteSchema", cache: true});
+        while (!resolveRequest) {
+            await new Promise((resolve) => setImmediate(resolve));
+        }
+
+        client.clear("schemas");
+        resolveRequest({status: 200, data: {type: "string"}, headers: {}});
+        await pending;
+
+        expect(client.snapshot().schemas.urls).toEqual([]);
+        await client.getJson(url, {kind: "remoteSchema", cache: true});
+        expect(adapter).toHaveBeenCalledTimes(2);
         expect(client.snapshot().schemas.urls).toEqual([url]);
     });
 
@@ -70,7 +99,7 @@ describe("server security hardening", () => {
     });
 
     test("a submitted schema cannot replace an authoritative local $id", async () => {
-        const validator = new BioValidator("test/resources/schema_registry/valid", {securityProfile: "server"});
+        const validator = new BioValidator("test/resources/schema_registry/valid");
         await expect(validator.validate({
             $id: "https://example.org/local/draft2019.json",
             type: "null"
@@ -84,7 +113,7 @@ describe("server security hardening", () => {
 
     test("schema complexity rejections identify the configurable deployment limit", async () => {
         const smallConfig = {...config, schemaMaxDepth: 2};
-        const validator = new BioValidator(null, {securityProfile: "server", securityConfig: smallConfig});
+        const validator = new BioValidator(null, {securityConfig: smallConfig});
         await expect(validator.validate({allOf: [{allOf: [{type: "string"}]}]}, "x"))
             .rejects.toMatchObject({
                 code: "SCHEMA_DEPTH_LIMIT",
@@ -93,9 +122,9 @@ describe("server security hardening", () => {
             });
     });
 
-    test("server profile blocks an unallowlisted $ref before any network request", async () => {
+    test("strict runtime blocks an unallowlisted $ref before any network request", async () => {
         const adapter = jest.fn();
-        const validator = new BioValidator(null, {securityProfile: "server", adapter});
+        const validator = new BioValidator(null, {adapter});
         await expect(validator.validate({$ref: "https://attacker.invalid/schema.json"}, {}))
             .rejects.toMatchObject({
                 code: "REMOTE_SCHEMA_DESTINATION_DENIED",
@@ -106,7 +135,7 @@ describe("server security hardening", () => {
     });
 
     test("identifies an invalid remote $ref in the public error", async () => {
-        const validator = new BioValidator(null, {securityProfile: "server"});
+        const validator = new BioValidator(null);
 
         await expect(validator.validate({$ref: "pepito"}, {})).rejects.toMatchObject({
             code: "OUTBOUND_URL_INVALID",
@@ -115,14 +144,14 @@ describe("server security hardening", () => {
         });
     });
 
-    test("server profile accepts an allowlisted self-identifying remote schema", async () => {
+    test("strict runtime accepts an allowlisted self-identifying remote schema", async () => {
         const url = "https://raw.githubusercontent.com/owner/repo/main/schema.json";
         const adapter = jest.fn().mockResolvedValue({
             status: 200,
             data: {$id: url, type: "string"},
             headers: {}
         });
-        const validator = new BioValidator(null, {securityProfile: "server", adapter});
+        const validator = new BioValidator(null, {adapter});
 
         await expect(validator.validate({$ref: url}, "value")).resolves.toEqual([]);
         expect(adapter).toHaveBeenCalledTimes(1);
@@ -138,7 +167,7 @@ describe("server security hardening", () => {
                 : {$id: claimedUrl, type: "object"},
             headers: {}
         }));
-        const validator = new BioValidator(null, {securityProfile: "server", adapter});
+        const validator = new BioValidator(null, {adapter});
 
         await expect(validator.validate({$ref: fetchedUrl}, null)).rejects.toMatchObject({
             code: "REMOTE_SCHEMA_ID_CONTENT_COLLISION",
@@ -148,7 +177,7 @@ describe("server security hardening", () => {
     });
 
     test("does not mistake a data property named $data for an AJV $data expression", async () => {
-        const validator = new BioValidator(null, {securityProfile: "server"});
+        const validator = new BioValidator(null);
         await expect(validator.validate({
             type: "object",
             properties: {$data: {type: "string"}},

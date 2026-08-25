@@ -31,11 +31,9 @@ class BioValidator {
         // '2019' will handle draft-06, draft-07 and draft-2019-09
         // '2020' will handle draft-2020-12
         this.ajvContexts = {};
-        this.securityProfile = options.securityProfile || "compatible";
         this.securityConfig = options.securityConfig || loadSecurityConfig();
         this.httpClient = options.httpClient || new SecureHttpClient({
             config: this.securityConfig,
-            securityProfile: this.securityProfile,
             adapter: options.adapter || axios
         });
         this.authoritativeSchemaIds = new Map();
@@ -53,7 +51,6 @@ class BioValidator {
     _httpOptions() {
         return {
             securityConfig: this.securityConfig,
-            securityProfile: this.securityProfile,
             httpClient: this.httpClient
         };
     }
@@ -104,23 +101,21 @@ class BioValidator {
             });
         }
         const cloned = cloneJson(inputSchema);
-        if (this.securityProfile === "server") {
-            inspectJsonComplexity(cloned, {
-                maxDepth: this.securityConfig.schemaMaxDepth,
-                maxValues: this.securityConfig.schemaMaxValues,
-                depthCode: "SCHEMA_DEPTH_LIMIT",
-                valueCode: "SCHEMA_VALUE_LIMIT",
-                depthName: "schema_max_depth",
-                valueName: "schema_max_values",
-                depthConfiguration: "BIOVALIDATOR_SCHEMA_MAX_DEPTH",
-                valueConfiguration: "BIOVALIDATOR_SCHEMA_MAX_VALUES"
-            });
-            if (findAjvDataReference(cloned)) {
-                throw new SecurityLimitError(
-                    "This Biovalidator server does not permit AJV $data expressions in untrusted schemas.",
-                    {code: "SCHEMA_DATA_REFERENCE_DENIED", configuration: "security profile"}
-                );
-            }
+        inspectJsonComplexity(cloned, {
+            maxDepth: this.securityConfig.schemaMaxDepth,
+            maxValues: this.securityConfig.schemaMaxValues,
+            depthCode: "SCHEMA_DEPTH_LIMIT",
+            valueCode: "SCHEMA_VALUE_LIMIT",
+            depthName: "schema_max_depth",
+            valueName: "schema_max_values",
+            depthConfiguration: "BIOVALIDATOR_SCHEMA_MAX_DEPTH",
+            valueConfiguration: "BIOVALIDATOR_SCHEMA_MAX_VALUES"
+        });
+        if (findAjvDataReference(cloned)) {
+            throw new SecurityLimitError(
+                "This Biovalidator server does not permit AJV $data expressions in untrusted schemas.",
+                {code: "SCHEMA_DATA_REFERENCE_DENIED", configuration: "strict runtime policy"}
+            );
         }
         if (cloned && typeof cloned === "object" && typeof cloned.$id === "string") {
             const authoritative = this.authoritativeSchemaIds.get(cloned.$id);
@@ -586,23 +581,21 @@ class BioValidator {
                                 {code: "REMOTE_SCHEMA_TYPE_INVALID", status: 502}
                             );
                         }
-                        if (this.securityProfile === "server") {
-                            inspectJsonComplexity(loadedSchema, {
-                                maxDepth: this.securityConfig.schemaMaxDepth,
-                                maxValues: this.securityConfig.schemaMaxValues,
-                                depthCode: "REMOTE_SCHEMA_DEPTH_LIMIT",
-                                valueCode: "REMOTE_SCHEMA_VALUE_LIMIT",
-                                depthName: "remote_schema_max_depth",
-                                valueName: "remote_schema_max_values",
-                                depthConfiguration: "BIOVALIDATOR_SCHEMA_MAX_DEPTH",
-                                valueConfiguration: "BIOVALIDATOR_SCHEMA_MAX_VALUES"
-                            });
-                            if (findAjvDataReference(loadedSchema)) {
-                                throw new SecurityLimitError(
-                                    `Remote $ref '${uri}' contains AJV $data expressions, which this Biovalidator server does not permit.`,
-                                    {code: "REMOTE_SCHEMA_DATA_REFERENCE_DENIED", status: 502}
-                                );
-                            }
+                        inspectJsonComplexity(loadedSchema, {
+                            maxDepth: this.securityConfig.schemaMaxDepth,
+                            maxValues: this.securityConfig.schemaMaxValues,
+                            depthCode: "REMOTE_SCHEMA_DEPTH_LIMIT",
+                            valueCode: "REMOTE_SCHEMA_VALUE_LIMIT",
+                            depthName: "remote_schema_max_depth",
+                            valueName: "remote_schema_max_values",
+                            depthConfiguration: "BIOVALIDATOR_SCHEMA_MAX_DEPTH",
+                            valueConfiguration: "BIOVALIDATOR_SCHEMA_MAX_VALUES"
+                        });
+                        if (findAjvDataReference(loadedSchema)) {
+                            throw new SecurityLimitError(
+                                `Remote $ref '${uri}' contains AJV $data expressions, which this Biovalidator server does not permit.`,
+                                {code: "REMOTE_SCHEMA_DATA_REFERENCE_DENIED", status: 502}
+                            );
                         }
 
                         const observedBytes = resp.sizeBytes || approximateBytes(resp.data);
@@ -623,7 +616,7 @@ class BioValidator {
                                     {code: "REMOTE_SCHEMA_ID_CONTENT_COLLISION", status: 502}
                                 );
                             }
-                            if (resolvedDeclaredId !== new URL(uri).toString() && this.securityProfile === "server") {
+                            if (resolvedDeclaredId !== new URL(uri).toString()) {
                                 const canonicalResponse = await this.httpClient.getJson(resolvedDeclaredId, {
                                     kind: "remoteSchema",
                                     maxBytes: this.securityConfig.remoteSchemaMaxBytes,
@@ -705,7 +698,7 @@ class BioValidator {
             allErrors: true,
             strict: false,
             loadSchema: loadSchema,
-            $data: this.securityProfile !== "server",
+            $data: false,
             addUsedSchema: false,
             ownProperties: true
         });

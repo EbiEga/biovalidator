@@ -12,7 +12,6 @@ const fs = require("fs");
 const crypto = require("crypto");
 const childProcess = require("child_process");
 const packageMetadata = require("../../package.json");
-const {getApiCacheDetails, clearApiCaches} = require("../keywords/shared-cache");
 
 const PROCESS_STARTED_AT = new Date(Date.now() - (process.uptime() * 1000)).toISOString();
 const PROJECT_ROOT = path.resolve(__dirname, "../..");
@@ -192,14 +191,11 @@ function resolveDeploymentMetadata(
 class BioValidatorServer {
   constructor(port, localSchemaPath, options = {}) {
     this.securityConfig = options.securityConfig || loadSecurityConfig();
-    this.securityProfile = options.securityProfile || (process.env.NODE_ENV === "test" ? "compatible" : "server");
     this.httpClient = options.httpClient || new SecureHttpClient({
-      config: this.securityConfig,
-      securityProfile: this.securityProfile
+      config: this.securityConfig
     });
     this.biovalidator = new BioValidator(localSchemaPath, {
       securityConfig: this.securityConfig,
-      securityProfile: this.securityProfile,
       httpClient: this.httpClient
     });
     this.fegaExamplesClient = new FegaExamplesClient({
@@ -207,7 +203,7 @@ class BioValidatorServer {
       httpClient: this.httpClient
     });
     this.validationPool = options.validationPool || (
-      this.securityProfile === "server" && options.disableWorkers !== true && process.env.BIOVALIDATOR_DISABLE_WORKERS !== "true"
+      options.disableWorkers !== true && process.env.BIOVALIDATOR_DISABLE_WORKERS !== "true"
         ? new ValidationPool({localSchemaPath, securityConfig: this.securityConfig, httpClient: this.httpClient})
         : null
     );
@@ -474,7 +470,7 @@ class BioValidatorServer {
         res.send({
           schemas: this.biovalidator.getSchemaInventory(),
           worker_schemas: this.validationPool ? this.validationPool.getSchemaInventory() : undefined,
-          api: getApiCacheDetails(),
+          api: this.httpClient.apiSnapshot(),
           outbound: this.httpClient.snapshot()
         });
       });
@@ -489,6 +485,11 @@ class BioValidatorServer {
 
         const cleared = [];
         const clearPromises = [];
+        // The assembled FEGA payload is a process-local cache layered on top
+        // of the shared outbound caches. Invalidate it for every cache scope;
+        // otherwise GET /examples can return a stale payload after its raw
+        // responses have been deleted and never repopulate /cache.
+        this.fegaExamplesClient.clearPayloadCache();
         if (scope === "all" || scope === "schemas") {
           this.biovalidator.clearSchemaCaches();
           if (this.validationPool) {
@@ -498,7 +499,6 @@ class BioValidatorServer {
           cleared.push("schemas");
         }
         if (scope === "all" || scope === "api") {
-          clearApiCaches();
           this.httpClient.clear("api");
           cleared.push("api");
         }
@@ -548,7 +548,7 @@ class BioValidatorServer {
       },
       cache: {
         schemas: this.biovalidator.getSchemaCacheDetails(),
-        api: getApiCacheDetails(),
+        api: this.httpClient.apiSnapshot(),
         outbound: this.httpClient.snapshot()
       },
       validation_capacity: this.validationPool ? this.validationPool.getDetails() : null

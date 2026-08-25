@@ -109,6 +109,24 @@ describe("FegaExamplesClient", () => {
         expect(axios).toHaveBeenCalledTimes(3);
     });
 
+    test("does not restore an assembled payload after it is invalidated in flight", async () => {
+        const client = new FegaExamplesClient();
+        let resolveFetch;
+        const payload = {source: "test", ref: "main", examples: []};
+        client._fetchExamples = jest.fn(() => new Promise((resolve) => {
+            resolveFetch = resolve;
+        }));
+
+        const pending = client.getExamples();
+        while (!resolveFetch) {
+            await new Promise((resolve) => setImmediate(resolve));
+        }
+        client.clearPayloadCache();
+        resolveFetch(payload);
+        await expect(pending).resolves.toEqual(payload);
+        expect(client.cache).toBeNull();
+    });
+
     test("rejects malformed wrappers missing schema or data", async () => {
         axios.mockImplementation((config) => {
             if (config.url.includes("/git/trees/")) {

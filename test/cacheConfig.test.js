@@ -61,25 +61,15 @@ describe('cache configuration', () => {
     jest.resetModules();
 
     const BioValidator = require('../src/core/biovalidator-core');
-    const {
-      olsCache,
-      enaTaxonomyCache,
-      identifiersCache,
-      getApiCacheDetails
-    } = require('../src/keywords/shared-cache');
+    const {SecureHttpClient} = require('../src/utils/secure-http-client');
     const validator = new BioValidator('');
 
     expect(validator.getSchemaCacheDetails().ttl_seconds).toBe(3600);
     expect(validator.ajvContexts['2019'].validatorCache.options.stdTTL).toBe(3600);
     expect(validator.ajvContexts['2020'].referencedSchemaCache.options.stdTTL).toBe(3600);
-    expect(olsCache.options.stdTTL).toBe(3600);
-    expect(enaTaxonomyCache.options.stdTTL).toBe(3600);
-    expect(identifiersCache.options.stdTTL).toBe(3600);
-    expect(Object.values(getApiCacheDetails().providers).map((provider) => provider.ttl_seconds))
-        .toEqual([3600, 3600, 3600]);
-
-    olsCache.close();
-    enaTaxonomyCache.close();
-    identifiersCache.close();
+    expect(validator.httpClient.apiCache.ttlMs).toBe(3600 * 1000);
+    expect(Object.values(validator.httpClient.apiSnapshot().providers).map((provider) => provider.ttl_seconds))
+        .toEqual([3600, 3600, 3600, 3600]);
+    expect(new SecureHttpClient().apiCache.ttlMs).toBe(3600 * 1000);
   });
 });
