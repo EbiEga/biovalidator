@@ -501,6 +501,12 @@ For development purposes using [nodemon](https://nodemon.io/) is useful. It relo
 nodemon src/biovalidator
 ```
 
+Before pushing changes, maintainers can run the complete local preflight:
+```
+npm run ci:preflight
+```
+This installs the locked dependencies, runs the deterministic test suite, builds the production Docker image, and smoke-checks its `--help` entrypoint. Docker must be available locally. GitHub CI repeats the container build and smoke check (without pushing); GitLab publishes images from protected `main` after its runner-specific Docker setup and registry login.
+
 ## Credits and maintenance
 
 Biovalidator was created by the contributors to the original [ELIXIR Biovalidator](https://github.com/elixir-europe/biovalidator). Their authorship is preserved in [CITATION.cff](CITATION.cff), and the original project can be cited using its [Zenodo record](https://doi.org/10.5281/zenodo.5608384).
