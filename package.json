@@ -62,7 +62,7 @@
     "rollup": "^4.62.5",
     "supertest": "^7.2.2",
     "terser": "^5.50.0",
-    "ts-node": "^9.1.0",
+    "ts-node": "^10.9.2",
     "typescript": "^4.1.2"
   },
   "overrides": {
