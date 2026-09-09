@@ -30,14 +30,50 @@ function pathMatches(candidate, allowed) {
     return candidate === allowed || candidate.startsWith(prefix);
 }
 
+/**
+ * Encode a rejected URL before including it in a public error. AJV may pass
+ * references through different URI normalizers, some of which leave reserved
+ * characters such as `=` or parentheses unescaped. Decode any existing
+ * escapes first, then apply strict component encoding so the error is stable
+ * across those normalizer versions and cannot contain markup.
+ *
+ * @param {unknown} rawUrl rejected URL/reference value.
+ * @returns {string} deterministic, markup-safe representation.
+ */
+function encodeInvalidUrlForError(rawUrl) {
+    const value = String(rawUrl);
+    let decoded = value;
+    try {
+        decoded = decodeURIComponent(value);
+    } catch (error) {
+        // Keep the original value when it contains a malformed escape; the
+        // encoder below will safely encode the percent sign itself.
+    }
+
+    let encoded;
+    try {
+        encoded = encodeURIComponent(decoded);
+    } catch (error) {
+        // encodeURIComponent rejects lone UTF-16 surrogates. Replace those
+        // with the Unicode replacement character so malformed input still
+        // receives a safe public representation.
+        encoded = encodeURIComponent(decoded.replace(/[\uD800-\uDFFF]/g, "\uFFFD"));
+    }
+    return encoded.replace(/[!'()*]/g, (character) =>
+        `%${character.charCodeAt(0).toString(16).toUpperCase()}`
+    );
+}
+
 function parseAndValidateUrl(rawUrl, kind, config) {
     let parsed;
     try {
         parsed = new URL(rawUrl);
     } catch (error) {
-        throw new SecurityLimitError(`Biovalidator rejected an invalid outbound URL: ${rawUrl}`, {
+        const safeReference = encodeInvalidUrlForError(rawUrl);
+        throw new SecurityLimitError(`Biovalidator rejected an invalid outbound URL: ${safeReference}`, {
             code: "OUTBOUND_URL_INVALID",
-            status: 422
+            status: 422,
+            reference: safeReference
         });
     }
 
