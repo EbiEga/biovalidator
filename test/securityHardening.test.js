@@ -144,6 +144,18 @@ describe("server security hardening", () => {
         });
     });
 
+    test("strictly encodes malformed remote URL details across URI normalizers", () => {
+        expect(() => parseAndValidateUrl(
+            "%3Cimg%20src=x%20onerror=alert(1)%3E",
+            "remoteSchema",
+            config
+        )).toThrow(expect.objectContaining({
+            code: "OUTBOUND_URL_INVALID",
+            reference: "%3Cimg%20src%3Dx%20onerror%3Dalert%281%29%3E",
+            message: "Biovalidator rejected an invalid outbound URL: %3Cimg%20src%3Dx%20onerror%3Dalert%281%29%3E"
+        }));
+    });
+
     test("strict runtime accepts an allowlisted self-identifying remote schema", async () => {
         const url = "https://raw.githubusercontent.com/owner/repo/main/schema.json";
         const adapter = jest.fn().mockResolvedValue({
