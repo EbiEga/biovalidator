@@ -670,11 +670,12 @@ class BioValidator {
                         return loadedSchema;
                     }).catch(err => {
                         if (err instanceof SecurityLimitError) {
+                            const reference = err.reference || uri;
                             if (!err.reference) {
-                                err.reference = uri;
+                                err.reference = reference;
                             }
                             if (!/remote \$ref/i.test(err.message)) {
-                                err.message = `Unable to resolve remote $ref '${uri}': ${err.message}`;
+                                err.message = `Unable to resolve remote $ref '${reference}': ${err.message}`;
                             }
                             throw err;
                         }
