@@ -12,6 +12,8 @@ class OlsSearchError extends Error {
     constructor(term, reason) {
         super(`OLS search failed for [${term}]: ${reason}`);
         this.name = "OlsSearchError";
+        this.status = 502;
+        this.code = "UPSTREAM_UNAVAILABLE";
     }
 }
 

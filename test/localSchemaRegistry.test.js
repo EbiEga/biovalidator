@@ -22,7 +22,7 @@ describe('local reference schema registry', () => {
       validatorID: [],
       referenced: []
     });
-    expect(validator.ajvContexts['2019'].registeredSchemas.has(
+    expect(validator.ajvContexts['07'].registeredSchemas.has(
         'https://example.org/local/draft2019.json'
     )).toBe(true);
     expect(validator.ajvContexts['2020'].registeredSchemas.has(
@@ -43,7 +43,7 @@ describe('local reference schema registry', () => {
 
   test('reuses a registered schema when the same $id is submitted directly', async () => {
     const validator = new BioValidator(VALID_DIRECTORY);
-    const registeredSchema = validator.ajvContexts['2019'].registeredSchemas.get(
+    const registeredSchema = validator.ajvContexts['07'].registeredSchemas.get(
         'https://example.org/local/draft2019.json'
     );
 
@@ -66,7 +66,7 @@ describe('local reference schema registry', () => {
       validatorID: [],
       referenced: []
     });
-    expect(validator.ajvContexts['2019'].ajv.getSchema(
+    expect(validator.ajvContexts['07'].ajv.getSchema(
         'https://example.org/local/draft2019.json'
     )).toEqual(expect.any(Function));
   });

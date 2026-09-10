@@ -3,7 +3,7 @@
 const path = require("path");
 const {Worker} = require("worker_threads");
 const SecurityLimitError = require("../model/security-limit-error");
-const {digestJson} = require("../utils/json-security");
+const {digestJson, inspectJsonComplexity} = require("../utils/json-security");
 
 function hydrateError(serialized) {
     if (serialized && serialized.name === "SecurityLimitError") {
@@ -61,7 +61,20 @@ class ValidationPool {
             ));
         }
 
-        const digest = digestJson(schema);
+        let digest;
+        try {
+            if (typeof schema !== "boolean" && (!schema || typeof schema !== "object" || Array.isArray(schema))) {
+                throw new SecurityLimitError("Schema must be a JSON object or boolean.", {code: "SCHEMA_TYPE_INVALID", status: 400});
+            }
+            inspectJsonComplexity(schema, {
+                maxDepth: this.securityConfig.schemaMaxDepth, maxValues: this.securityConfig.schemaMaxValues,
+                depthCode: "SCHEMA_DEPTH_LIMIT", valueCode: "SCHEMA_VALUE_LIMIT",
+                depthConfiguration: "BIOVALIDATOR_SCHEMA_MAX_DEPTH", valueConfiguration: "BIOVALIDATOR_SCHEMA_MAX_VALUES"
+            });
+            digest = digestJson(schema);
+        } catch (error) {
+            return Promise.reject(error);
+        }
         return new Promise((resolve, reject) => {
             const job = {id: ++this.sequence, schema, data, digest, resolve, reject, queuedAt: Date.now()};
             job.queueTimer = setTimeout(() => {
@@ -121,6 +134,7 @@ class ValidationPool {
 
     _spawnWorker() {
         const worker = new Worker(path.join(__dirname, "validation-worker.js"), {
+            resourceLimits: {maxOldGenerationSizeMb: this.securityConfig.workerHeapMb},
             workerData: {
                 localSchemaPath: this.localSchemaPath,
                 securityConfig: this.securityConfig
@@ -140,7 +154,7 @@ class ValidationPool {
         worker.on("message", (message) => this._onMessage(slot, message));
         worker.on("error", (error) => this._onWorkerFailure(slot, error));
         worker.on("exit", (code) => {
-            if (!slot.intentional && code !== 0) {
+            if (!slot.intentional) {
                 this._onWorkerFailure(slot, new Error(`Validation worker exited with code ${code}.`));
             }
         });
@@ -153,6 +167,7 @@ class ValidationPool {
         }
         if (message.type === "ready") {
             slot.ready = true;
+            this.lastFailureAt = null;
             this._setWorkerInventory(slot, message.inventory);
             if (slot.pendingJob) {
                 const job = slot.pendingJob;
@@ -164,6 +179,7 @@ class ValidationPool {
             return;
         }
         if (message.type === "outbound") {
+            if (!this.workers.includes(slot) || slot.intentional) return;
             const options = {...(message.options || {})};
             const cacheSink = options.deferCache ? [] : undefined;
             delete options.deferCache;
@@ -171,6 +187,7 @@ class ValidationPool {
                 options.cacheSink = cacheSink;
             }
             this.httpClient.getJson(message.url, options).then((response) => {
+                if (!this.workers.includes(slot) || slot.intentional) return;
                 const cacheTokens = (cacheSink || []).map((entry) => {
                     const token = `outbound:${++this.outboundSequence}`;
                     this.stagedOutbound.set(token, {entry, owner: slot});
@@ -225,7 +242,11 @@ class ValidationPool {
             clearTimeout(job.executionTimer);
             slot.job = null;
             this.jobs.delete(job.id);
+            slot.digests.delete(job.digest);
             slot.digests.add(job.digest);
+            while (slot.digests.size > this.securityConfig.compiledCacheMaxEntries) {
+                slot.digests.delete(slot.digests.values().next().value);
+            }
             this._setWorkerInventory(slot, message.inventory);
             if (message.error) {
                 job.reject(hydrateError(message.error));
@@ -287,6 +308,7 @@ class ValidationPool {
         if (!this.workers.includes(slot)) {
             return;
         }
+        this.lastFailureAt = Date.now();
         this._discardStagedOutbound(slot);
         this.workers = this.workers.filter((candidate) => candidate !== slot);
         if (slot.cacheClear) {
@@ -385,6 +407,7 @@ class ValidationPool {
 
     getDetails() {
         return {
+            ready: !this.closed && (!this.lastFailureAt || Date.now() - this.lastFailureAt > 30_000),
             workers: {configured: this.maxWorkers, started: this.workers.length,
                 busy: this.workers.filter((slot) => Boolean(slot.job)).length},
             queue: {entries: this.queue.length}

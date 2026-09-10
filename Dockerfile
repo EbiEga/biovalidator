@@ -32,6 +32,8 @@ COPY --from=build --chown=node:node /usr/src/app/src/utils ./src/utils
 COPY --from=build --chown=node:node /usr/src/app/src/views ./src/views
 
 ENV NODE_ENV=production \
+    BIOVALIDATOR_REVISION=${REVISION} \
+    BIOVALIDATOR_FILE_LOG_ENABLED=false \
     BIOVALIDATOR_PORT=3020 \
     BIOVALIDATOR_LOG_DIR=/tmp/biovalidator/logs \
     BIOVALIDATOR_PID_PATH=/tmp/biovalidator/server.pid

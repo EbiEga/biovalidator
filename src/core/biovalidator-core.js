@@ -6,7 +6,7 @@ const draft06MetaSchema = require("ajv/dist/refs/json-schema-draft-06.json");
 const draft07MetaSchema = require("ajv/dist/refs/json-schema-draft-07.json");
 const addFormats = require("ajv-formats");
 const axios = require('axios');
-const AppError = require("../model/application-error");
+const traverse = require("json-schema-traverse");
 const {getFiles, readFile} = require("../utils/file_utils");
 const {isChildTermOf, isValidTerm, isValidTaxonomy} = require("../keywords");
 const GraphRestriction = require("../keywords/graphRestriction");
@@ -28,7 +28,7 @@ const {cloneJson, digestJson, findAjvDataReference, inspectJsonComplexity} = req
 class BioValidator {
     constructor(localSchemaPath, options = {}) {
         // Maintain separate AJV contexts per draft family to avoid mixing incompatible drafts
-        // '2019' will handle draft-06, draft-07 and draft-2019-09
+        // '07' handles draft-06/07, '2019' handles draft-2019-09
         // '2020' will handle draft-2020-12
         this.ajvContexts = {};
         this.securityConfig = options.securityConfig || loadSecurityConfig();
@@ -55,40 +55,23 @@ class BioValidator {
         };
     }
 
-    // wrapper around _validate to process output
-    validate(inputSchema, inputObject) {
-        let preparedSchema;
-        try {
-            preparedSchema = this._prepareInputSchema(inputSchema);
-        } catch (error) {
-            return Promise.reject(error);
-        }
-        const sid = preparedSchema && typeof preparedSchema === "object"
-            ? (preparedSchema["$id"] || "(no '$id')")
-            : "(boolean schema)";
-        logger.debug(`BioValidator.validate() called for initial schema '$id': '${sid}'`);
-
-        return this.validationStorage.run({remoteUris: new Set(), remoteBytes: 0}, () => new Promise((resolve, reject) => {
-            this._validate(preparedSchema, inputObject)
-                .then((validationResult) => {
-                    if (validationResult.length === 0) {
-                        resolve([]);
-                    } else {
-                        const ajvErrors = [...validationResult];
-                        resolve(this.convertToValidationErrors(ajvErrors));
-                    }
-                })
-                .catch((error) => {
-                    logger.error(`BioValidator.validate() caught error processing schema '$id': '${sid}'. Error: ${error.message || JSON.stringify(error)}`);
-                    if (error.errors) {
-                        logger.error("AJV validation errors encountered: " + JSON.stringify(error.errors));
-                        reject(new AppError(error.errors));
-                    } else {
-                        logger.error("Non-AJV error during validation: " + JSON.stringify(error));
-                        reject(error);
-                    }
+    async validate(inputSchema, inputObject) {
+        const schema = this._prepareInputSchema(inputSchema);
+        return this.validationStorage.run({remoteUris: new Set(), remoteBytes: 0}, async () => {
+            const errors = await this._validate(schema, inputObject);
+            if (errors.length > this.securityConfig.validationMaxErrors) {
+                throw new SecurityLimitError("Validation produced too many errors for this deployment.", {
+                    code: "VALIDATION_ERROR_LIMIT", configuration: "BIOVALIDATOR_VALIDATION_MAX_ERRORS"
                 });
-        }));
+            }
+            const result = this.convertToValidationErrors(errors);
+            if (Buffer.byteLength(JSON.stringify(result)) > this.securityConfig.validationResultMaxBytes) {
+                throw new SecurityLimitError("Validation results exceeded this deployment's response limit.", {
+                    code: "VALIDATION_RESULT_SIZE_LIMIT", configuration: "BIOVALIDATOR_VALIDATION_RESULT_MAX_BYTES"
+                });
+            }
+            return result;
+        });
     }
 
     _prepareInputSchema(inputSchema) {
@@ -100,8 +83,7 @@ class BioValidator {
                 status: 400
             });
         }
-        const cloned = cloneJson(inputSchema);
-        inspectJsonComplexity(cloned, {
+        inspectJsonComplexity(inputSchema, {
             maxDepth: this.securityConfig.schemaMaxDepth,
             maxValues: this.securityConfig.schemaMaxValues,
             depthCode: "SCHEMA_DEPTH_LIMIT",
@@ -111,6 +93,7 @@ class BioValidator {
             depthConfiguration: "BIOVALIDATOR_SCHEMA_MAX_DEPTH",
             valueConfiguration: "BIOVALIDATOR_SCHEMA_MAX_VALUES"
         });
+        const cloned = cloneJson(inputSchema);
         if (findAjvDataReference(cloned)) {
             throw new SecurityLimitError(
                 "This Biovalidator server does not permit AJV $data expressions in untrusted schemas.",
@@ -262,6 +245,11 @@ class BioValidator {
             return; // Don't inject if explicitly false
         }
 
+        if (this._draftType(inputSchema) === "07") {
+            traverse(inputSchema, node => {
+                if (typeof node.$ref === "string") { delete node.type; delete node.nullable; }
+            });
+        }
         // Also inject into definitions/$defs if root $async is true (or missing)
         if (Object.prototype.hasOwnProperty.call(inputSchema, "definitions")) {
             let defs = Object.keys(inputSchema.definitions);
@@ -279,126 +267,100 @@ class BioValidator {
         }
     }
 
-    _validate(inputSchema, inputObject) {
-        const schemaIdForLog = inputSchema && typeof inputSchema === "object"
-            ? (inputSchema.$id || "[no $id in schema]")
-            : "[boolean schema]";
+    async _resolveInputDraft(inputSchema) {
+        if (!inputSchema || typeof inputSchema !== "object" || inputSchema.$schema ||
+            typeof inputSchema.$ref !== "string" || inputSchema.$ref.startsWith("#")) return;
+        const registered = Object.values(this.ajvContexts).some(ctx => ctx.registeredSchemas.has(inputSchema.$ref));
+        if (registered) return;
+        const uri = inputSchema.$ref.split("#")[0];
+        const remote = await this.ajvContexts["2019"].loadSchema(uri);
+        if (remote && typeof remote.$schema === "string") inputSchema.$schema = remote.$schema;
+    }
+
+    async _validate(inputSchema, inputObject) {
+        await this._resolveInputDraft(inputSchema);
         this._insertAsyncToSchemasAndDefs(inputSchema);
-        // The following is useful for when doing a deep-debugging of schema issues, but too verbose otherwise
-        // logger.debug("Final schema after injection:\n" + JSON.stringify(inputSchema, null, 2));
-
-        return new Promise((resolve, reject) => {
-            const ajvCtx = this._getAjvContextForSchema(inputSchema);
-            const compiledSchemaPromise = this.getValidationFunction(inputSchema);
-
-            compiledSchemaPromise.then((validate) => {
-                logger.info(`Successfully obtained compiled function for schema '$id': '${schemaIdForLog}'.`);
-                Promise.resolve(validate(inputObject))
-                    .then((data) => {
-                        if (validate.errors) {
-                            logger.info(`Validation finished with errors for schema '$id': '${schemaIdForLog}'.`);
-                            resolve(validate.errors);
-                        } else {
-                           logger.info(`Validation finished successfully for schema '$id': '${schemaIdForLog}'.`);
-                            resolve([]);
-                        }
-                    })
-                    .catch((err) => {
-                        if (!(err instanceof Ajv.ValidationError)) {
-                            logger.error("An unexpected error occurred during data validation execution. " + (err.message || err));
-                            reject(err instanceof SecurityLimitError
-                                ? err
-                                : new AppError("An error occurred while running the validation. " + (err.message || err)));
-                        } else {
-                            logger.error("Validation failed with AJV ValidationError: " + ajvCtx.ajv.errorsText(err.errors, {dataVar: inputObject.alias}));
-                            resolve(err.errors);
-                        }
-                    });
-             }).catch(err => {
-                 logger.error(`Failed to compile/get validation function for schema '$id': '${schemaIdForLog}'. Error: ${err.message || JSON.stringify(err)}`);
-                 if (err instanceof Ajv.MissingRefError) {
-                     logger.error(
-                         `AJV MissingRefError (Failed to compile)` +
-                         `. Missing '$ref': ${err.missingRef}'. ` +
-                         `Base URI/Schema where error occurred: '${err.missingSchema || inputSchema.$id || "(root)"}'`
-                     );
-                 } else if (err instanceof AppError) {
-                     logger.error(`AppError during compile: ${err.error || err.message || JSON.stringify(err)}`);
-                 } else if (err.errors && err.errors.length) {
-                     logger.error(
-                         "AJV schema compilation errors:\n" +
-                         err.errors
-                            .map(e => ` ${e.message || JSON.stringify(e)} @ ${e.schemaPath || 'unknown path'}`)
-                            .join("\n")
-                     );
-                 } else {
-                     logger.error("Unexpected compile failure type: " + (err.stack || err));
-                 }
-                 reject(err instanceof SecurityLimitError
-                     ? err
-                     : new AppError("Failed to compile schema. See server log for details."));
-             });
-         });
+        let validate;
+        try {
+            validate = await this.getValidationFunction(inputSchema);
+        } catch (error) {
+            if (error instanceof SecurityLimitError) throw error;
+            throw new SecurityLimitError(`Invalid schema: ${error.message || error}`, {
+                code: "SCHEMA_COMPILATION_FAILED", status: 422,
+                help: "Correct the schema or configure its annotation keywords before retrying."
+            });
+        }
+        try {
+            await validate(inputObject);
+            return validate.errors || [];
+        } catch (error) {
+            if (error instanceof Ajv.ValidationError) return error.errors;
+            throw error;
+        }
     }
 
     convertToValidationErrors(ajvErrorObjects) {
-        let localErrors = [];
-        ajvErrorObjects.forEach((errorObject) => {
-            let tempValError = new ValidationError(errorObject);
-            let index = localErrors.findIndex(valError => (valError.dataPath === tempValError.dataPath));
-
-            if (index !== -1) {
-                localErrors[index].errors.push(tempValError.errors[0]);
-            } else {
-                localErrors.push(tempValError);
-            }
-        });
-        return localErrors;
+        const grouped = new Map();
+        for (const error of ajvErrorObjects) {
+            const item = new ValidationError(error);
+            if (grouped.has(item.dataPath)) grouped.get(item.dataPath).errors.push(...item.errors);
+            else grouped.set(item.dataPath, item);
+        }
+        return [...grouped.values()];
     }
 
     getValidationFunction(inputSchema) {
         const ctx = this._getAjvContextForSchema(inputSchema);
-        const schemaId = inputSchema && typeof inputSchema === "object" ? inputSchema['$id'] : undefined;
+        if (ctx.type === "07" && inputSchema && typeof inputSchema === "object") {
+            // Ajv checks type before its legacy ignoreKeywordsWithRef branch.
+            // Strip that pre-check only at schema nodes, never inside enum/default data.
+            inputSchema = cloneJson(inputSchema);
+            traverse(inputSchema, node => {
+                if (typeof node.$ref === "string") {
+                    delete node.type;
+                    delete node.nullable;
+                }
+            });
+        }
+        const schemaId = inputSchema && typeof inputSchema === "object" ? inputSchema.$id : undefined;
         if (schemaId && ctx.registeredSchemas.has(schemaId)) {
-            logger.info(`Using registered local schema (context ${ctx.type}), '$id': ${schemaId}`);
-            return ctx.ajv.compileAsync({$async: true, $ref: schemaId});
+            const wrapper = {$async: true, $ref: schemaId};
+            return ctx.ajv.compileAsync(wrapper).finally(() => ctx.ajv.removeSchema(wrapper));
         }
         const schemaDigest = digestJson(inputSchema);
         const cacheKey = `${ctx.type}:${schemaDigest}`;
         if (ctx.validatorCache.has(cacheKey)) {
-            logger.info(`Returning compiled schema from validator cache (context ${ctx.type}), digest: ${schemaDigest}`);
+            const metadata = ctx.validatorMetadata.get(cacheKey);
+            ctx.validatorMetadata.delete(cacheKey);
+            ctx.validatorMetadata.set(cacheKey, metadata);
             return Promise.resolve(ctx.validatorCache.get(cacheKey));
         }
-
-        logger.debug(`Compiling schema '$id': ${schemaId || "(no '$id')"} (context: ${ctx.type}). This will trigger loading of external references.`);
-        const compiledSchemaPromise = ctx.ajv.compileAsync(inputSchema);
-        try {
-            ctx.validatorCache.set(cacheKey, compiledSchemaPromise);
-            ctx.validatorMetadata.set(cacheKey, schemaId || `(content:${schemaDigest.slice(0, 12)})`);
-            logger.info(`Saving compiled schema in validator cache (context ${ctx.type}), digest: ${schemaDigest}`);
-        } catch (error) {
-            throw new SecurityLimitError(
-                `The compiled-schema cache reached this Biovalidator deployment's ${this.securityConfig.compiledCacheMaxEntries}-entry limit.`,
-                {
-                    code: "COMPILED_SCHEMA_CACHE_LIMIT",
-                    status: 503,
-                    configuration: "BIOVALIDATOR_COMPILED_CACHE_MAX_ENTRIES"
-                }
-            );
+        // NodeCache limits entries but does not evict. Reserve a slot before compiling.
+        while (ctx.validatorCache.keys().length >= this.securityConfig.compiledCacheMaxEntries) {
+            const oldest = ctx.validatorMetadata.keys().next().value || ctx.validatorCache.keys()[0];
+            ctx.validatorCache.del(oldest);
         }
-        compiledSchemaPromise.catch(() => {
-            ctx.validatorCache.del(cacheKey);
-            ctx.validatorMetadata.delete(cacheKey);
+        const compiled = ctx.ajv.compileAsync(inputSchema).finally(() => {
+            // The bounded application cache owns root validators. Ajv must not retain
+            // another unbounded copy, including failed compilations and local wrappers.
+            if (inputSchema && typeof inputSchema === "object") ctx.ajv.removeSchema(inputSchema);
         });
-        return Promise.resolve(compiledSchemaPromise);
+        ctx.validatorCache.set(cacheKey, compiled);
+        ctx.validatorMetadata.set(cacheKey, schemaId || `(content:${schemaDigest.slice(0, 12)})`);
+        compiled.catch(() => {
+            if (ctx.validatorCache.get(cacheKey) === compiled) ctx.validatorCache.del(cacheKey);
+        });
+        return compiled;
     }
 
     async preloadRemoteSchemas(urls = []) {
         for (const url of urls) {
             const schema = this._prepareInputSchema({$ref: url});
             this._insertAsyncToSchemasAndDefs(schema);
-            await this.validationStorage.run({remoteUris: new Set(), remoteBytes: 0}, () =>
-                this.getValidationFunction(schema));
+            await this.validationStorage.run({remoteUris: new Set(), remoteBytes: 0}, async () => {
+                await this._resolveInputDraft(schema);
+                return this.getValidationFunction(schema);
+            });
         }
     }
 
@@ -450,12 +412,13 @@ class BioValidator {
 
     /**
      * Initialize AJV contexts for different draft families.
-     * - '2019' handles draft-06, draft-07 and draft-2019-09
+     * - '07' handles draft-06/07; '2019' handles draft-2019-09
      * - '2020' handles draft-2020-12
      * Each context has its own AJV instance and separate caches to avoid cross-draft contamination.
      */ 
     _initAjvContexts(localSchemaPath) {
         const localSchemas = this._loadLocalSchemas(localSchemaPath);
+        this.ajvContexts['07'] = this._createAjvContext('07', localSchemas);
         this.ajvContexts['2019'] = this._createAjvContext('2019', localSchemas);
         this.ajvContexts['2020'] = this._createAjvContext('2020', localSchemas);
     }
@@ -502,7 +465,7 @@ class BioValidator {
                 file,
                 schema,
                 digest: schemaDigest,
-                type: typeof schema.$schema === "string" && schema.$schema.includes("2020") ? "2020" : "2019"
+                type: this._draftType(schema)
             };
         });
     }
@@ -532,7 +495,7 @@ class BioValidator {
         const referencedSchemaCacheMetrics = new CacheMetrics(referencedSchemaCache, CACHE_TTL_SECONDS);
         const validatorCacheMetrics = new CacheMetrics(validatorCache, CACHE_TTL_SECONDS);
 
-        let AjvClass = (type === '2020') ? Ajv2020 : Ajv2019;
+        const AjvClass = type === '07' ? Ajv : (type === '2020' ? Ajv2020 : Ajv2019);
 
         // loader bound to this context's referencedSchemaCache
         const loadSchema = (uri) => {
@@ -649,12 +612,7 @@ class BioValidator {
                         this._insertAsyncToSchemasAndDefs(loadedSchema);
 
                         // Prefer storing into the context that matches the schema's $schema if available
-                        let targetCtx = null;
-                        if (typeof loadedSchema.$schema === 'string' && loadedSchema.$schema.includes('2020')) {
-                            targetCtx = this.ajvContexts['2020'];
-                        } else {
-                            targetCtx = this.ajvContexts['2019'];
-                        }
+                        const targetCtx = this.ajvContexts[this._draftType(loadedSchema)];
 
                         if (targetCtx && targetCtx.referencedSchemaCache) {
                             targetCtx.referencedSchemaCache.set(uri, loadedSchema);
@@ -698,6 +656,8 @@ class BioValidator {
         let ajvInstance = new AjvClass({
             allErrors: true,
             strict: false,
+            strictSchema: this.securityConfig.schemaStrict,
+            ...(type === "07" ? {ignoreKeywordsWithRef: true} : {}),
             loadSchema: loadSchema,
             $data: false,
             addUsedSchema: false,
@@ -716,11 +676,12 @@ class BioValidator {
                 logger.warn(`Failed to evict expired remote schema '${schemaId}' from AJV context ${type}: ${error.message || error}`);
             }
         });
-        validatorCache.on("expired", (cacheKey) => validatorMetadata.delete(cacheKey));
+        validatorCache.on("del", (cacheKey) => validatorMetadata.delete(cacheKey));
 
-        if (type === "2019") {
-            ajvInstance.addMetaSchema(draft06MetaSchema);
-            ajvInstance.addMetaSchema(draft07MetaSchema);
+        if (type === "07" || type === "2019") ajvInstance.addMetaSchema(draft06MetaSchema);
+        if (type === "2019") ajvInstance.addMetaSchema(draft07MetaSchema);
+        for (const keyword of this.securityConfig.annotationKeywords) {
+            if (!ajvInstance.getKeyword(keyword)) ajvInstance.addKeyword(keyword);
         }
 
         addFormats(ajvInstance);
@@ -735,6 +696,7 @@ class BioValidator {
 
         return {
             ajv: ajvInstance,
+            loadSchema,
             registeredSchemas,
             referencedSchemaCache,
             referencedSchemaCacheMetrics,
@@ -750,13 +712,17 @@ class BioValidator {
      * Select the appropriate AJV context for a schema by inspecting its
      * $schema property. Defaults to the '2019' context for older drafts.
      */
+    _draftType(schema) {
+        const uri = schema && schema.$schema;
+        if (typeof uri === "string" && /draft-0[67]\/schema#?$/.test(uri)) return "07";
+        return typeof uri === "string" && uri.includes("2020") ? "2020" : "2019";
+    }
+
     _getAjvContextForSchema(inputSchema) {
         // Determine which AJV context to use based on the $schema property when available
         const schemaUri = inputSchema && inputSchema.$schema;
         if (typeof schemaUri === 'string') {
-            return schemaUri.includes('2020')
-                ? this.ajvContexts['2020']
-                : this.ajvContexts['2019'];
+            return this.ajvContexts[this._draftType(inputSchema)];
         }
         if (inputSchema && typeof inputSchema.$ref === 'string') {
             const registeredContext = Object.values(this.ajvContexts)

@@ -280,7 +280,8 @@ class SecureHttpClient {
                     });
                 }
             }
-            if (payload === null || typeof payload !== "object") {
+            if ((payload === null || typeof payload !== "object") &&
+                !(kind === "remoteSchema" && typeof payload === "boolean")) {
                 throw new SecurityLimitError(`The ${kind} service returned malformed JSON content.`, {
                     code: "UPSTREAM_JSON_INVALID",
                     status: 502

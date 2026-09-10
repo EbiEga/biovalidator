@@ -13,6 +13,7 @@ spec:
       labels:
         app: biovalidator
     spec:
+      terminationGracePeriodSeconds: 85
       containers:
         - name: biovalidator
           image: "dockerhub.ebi.ac.uk/ega/biovalidator:main"
@@ -34,7 +35,7 @@ spec:
               containerPort: 3020
           readinessProbe:
             httpGet:
-              path: /biovalidator/health
+              path: /biovalidator/ready
               port: http
             periodSeconds: 10
             timeoutSeconds: 2

@@ -1,4 +1,5 @@
 const express = require("express");
+const {rateLimit} = require("express-rate-limit");
 const {logger, addLogDirectory} = require("../utils/winston");
 const SecurityLimitError = require("../model/security-limit-error");
 const BioValidator = require("./biovalidator-core")
@@ -18,7 +19,7 @@ const PROJECT_ROOT = path.resolve(__dirname, "../..");
 const VIEW_ROOT = path.join(__dirname, "..", "views");
 const CSP_NONCE_PLACEHOLDER = "__BIOVALIDATOR_CSP_NONCE__";
 const SHUTDOWN_SIGNALS = Object.freeze(["SIGTERM", "SIGINT", "SIGUSR1"]);
-const SHUTDOWN_TIMEOUT_MS = 25_000;
+const SHUTDOWN_TIMEOUT_MS = 75_000;
 
 const JSON_STRING_ESCAPES = Object.freeze({
   "<": "\\u003c",
@@ -123,7 +124,7 @@ function logServerError(context, error) {
 
 function isCacheEndpointEnabled(environment = process.env) {
   const configured = environment.BIOVALIDATOR_CACHE_ENDPOINT_ENABLED;
-  return configured === undefined || String(configured).trim().toLowerCase() !== "false";
+  return String(configured).trim().toLowerCase() === "true";
 }
 
 /**
@@ -217,6 +218,7 @@ class BioValidatorServer {
     this.shutdownTimeoutMs = options.shutdownTimeoutMs ?? SHUTDOWN_TIMEOUT_MS;
     this.processExit = options.processExit || ((code) => process.exit(code));
     this.shutdownPromise = null;
+    this.draining = false;
     this.shutdownHandlers = new Map();
     this.uiTemplates = Object.freeze({
       index: fs.readFileSync(path.join(VIEW_ROOT, "index.html"), "utf8"),
@@ -274,6 +276,23 @@ class BioValidatorServer {
 
     this.app = express();
     this.app.disable("x-powered-by");
+    if (process.env.BIOVALIDATOR_TRUST_PROXY) {
+      this.app.set("trust proxy", process.env.BIOVALIDATOR_TRUST_PROXY.split(",").map(value => value.trim()));
+    }
+    this.app.use((req, res, next) => {
+      if (this.draining && req.path !== `${this.baseUrl.replace(/\/$/, "")}/health`) {
+        sendError(res, 503, "Server is shutting down; retry shortly.");
+        return;
+      }
+      next();
+    });
+    const prefix = this.baseUrl.replace(/\/$/, "");
+    if (prefix) {
+      this.app.get(prefix, (req, res, next) => {
+        if (req.path === prefix) res.redirect(308, `${prefix}/${req.url.slice(req.path.length)}`);
+        else next();
+      });
+    }
     this.router = express.Router();
     this.router.get(["/", "/index.html", "/index_editing.html"], (req, res) => {
       const template = req.path === "/index_editing.html" ? this.uiTemplates.editing : this.uiTemplates.index;
@@ -300,6 +319,21 @@ class BioValidatorServer {
       next();
     });
 
+    if (this.securityConfig.rateLimitEnabled) {
+      const limiter = rateLimit({
+        windowMs: this.securityConfig.rateLimitWindowMs,
+        limit: this.securityConfig.rateLimitMax,
+        standardHeaders: "draft-8", legacyHeaders: false,
+        handler: (req, res) => sendJson(res, 429, {
+          error: "Too many requests; retry after the indicated delay.", code: "REQUEST_RATE_LIMIT",
+          configuration: "BIOVALIDATOR_RATE_LIMIT_MAX and BIOVALIDATOR_RATE_LIMIT_WINDOW_MS"
+        })
+      });
+      this.app.use(this.baseUrl, (req, res, next) => {
+        if (["/health", "/ready"].includes(req.path)) return next();
+        return limiter(req, res, next);
+      });
+    }
     this.app.use(express.json({limit: this.securityConfig.requestMaxBytes, strict: true}));
 
     this.app.use((err, req, res, next) => {
@@ -516,6 +550,11 @@ class BioValidatorServer {
       });
     }
 
+    this.router.get("/ready", (req, res) => {
+      const ready = !this.draining && (!this.validationPool || this.validationPool.getDetails().ready);
+      sendJson(res, ready ? 200 : 503, {status: ready ? "ready" : "unavailable"});
+    });
+
     this.router.get("/health", (req, res) => {
       res.status(200).send(this._getHealthDetails());
     });
@@ -566,11 +605,15 @@ class BioValidatorServer {
       logger.info(`Writing logs to: ${path.resolve(this.logPath)}/`);
     });
 
+    this.expressServer.maxConnections = this.securityConfig.maxConnections;
+    this.expressServer.requestTimeout = this.securityConfig.requestTimeoutMs;
+    this.expressServer.headersTimeout = Math.min(60_000, this.securityConfig.requestTimeoutMs);
     return this;
   }
 
   _registerHooks() {
     try {
+      fs.mkdirSync(path.dirname(path.resolve(this.pidPath)), {recursive: true});
       npid.create(this.pidPath).removeOnExit();
     } catch(err) {
       logger.error("Failed to create PID file. ", err);
@@ -610,6 +653,7 @@ class BioValidatorServer {
       return this.shutdownPromise;
     }
 
+    this.draining = true;
     logger.info(`Received ${signal}; shutting down Biovalidator.`);
 
     const closeHttpServer = new Promise((resolve, reject) => {
@@ -624,9 +668,9 @@ class BioValidatorServer {
       }
     });
 
-    const closeValidationPool = this.validationPool
-      ? Promise.resolve().then(() => this.validationPool.close())
-      : Promise.resolve();
+    let poolClose;
+    const closePool = () => poolClose || (poolClose = Promise.resolve().then(() => this.validationPool?.close()));
+    const drained = closeHttpServer.then(closePool);
 
     this.shutdownPromise = new Promise((resolve) => {
       let completed = false;
@@ -648,10 +692,11 @@ class BioValidatorServer {
       };
 
       const forceTimer = setTimeout(() => {
+        closePool().catch(error => logger.error(error.message));
         finish(1, new Error(`Shutdown exceeded ${this.shutdownTimeoutMs}ms; forcing exit.`));
       }, this.shutdownTimeoutMs);
 
-      Promise.all([closeHttpServer, closeValidationPool])
+      drained
         .then(() => finish(0))
         .catch((error) => finish(1, error));
     });

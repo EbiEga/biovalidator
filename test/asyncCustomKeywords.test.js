@@ -104,7 +104,7 @@ describe("asyncCustomKeywords test suite", () => {
       // failure callback:
       (err) => {
         expect(err).toBeDefined();
-        expect(err.error).toContain("Failed to compile schema");
+        expect(err).toMatchObject({code: "SCHEMA_COMPILATION_FAILED", status: 422});
       }
     );
   });  

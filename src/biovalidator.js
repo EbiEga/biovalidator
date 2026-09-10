@@ -44,7 +44,7 @@ async function main() {
         if (!_validateCliArgs(schema, data)) {
             process.exit(1);
         }
-        new BioValidatorCli(schema, data, schemaRef).validate();
+        process.exitCode = await new BioValidatorCli(schema, data, schemaRef).validate();
     } else {
         new BioValidatorServer(port, schemaRef)
             .withRemoteRefs(remoteRefs)

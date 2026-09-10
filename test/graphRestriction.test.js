@@ -80,7 +80,7 @@ describe("graphRestriction", () => {
         const restriction = new GraphRestriction();
         const validate = restriction.generateKeywordFunction();
         await expect(validate({
-            classes: ["http://purl.obolibrary.org/obo/MONDO_0000001"],
+            allChildrenOf: ["http://purl.obolibrary.org/obo/MONDO_0000001"],
             ontologies: ["mondo"],
             queryFields
         }, term)).resolves.toBe(true);
@@ -103,7 +103,7 @@ describe("graphRestriction", () => {
         const validate = restriction.generateKeywordFunction();
 
         await expect(validate({
-            classes: ["http://purl.obolibrary.org/obo/MONDO_0000001"],
+            allChildrenOf: ["http://purl.obolibrary.org/obo/MONDO_0000001"],
             ontologies: ["mondo"]
         }, "glioblastoma")).rejects.toMatchObject({
             errors: [
@@ -119,7 +119,7 @@ describe("graphRestriction", () => {
         const validate = restriction.generateKeywordFunction();
 
         await expect(validate({
-            classes: ["http://purl.obolibrary.org/obo/MONDO_0000001"],
+            allChildrenOf: ["http://purl.obolibrary.org/obo/MONDO_0000001"],
             ontologies: ["mondo"],
             queryFields: ["short_form"]
         }, "MONDO:0018177")).rejects.toMatchObject({
@@ -148,7 +148,7 @@ describe("graphRestriction", () => {
         const validate = restriction.generateKeywordFunction();
 
         await expect(validate({
-            classes: ["http://purl.obolibrary.org/obo/MONDO_0000001"],
+            allChildrenOf: ["http://purl.obolibrary.org/obo/MONDO_0000001"],
             ontologies: ["mondo"],
             queryFields: ["label"]
         }, "shared label")).rejects.toMatchObject({
@@ -158,5 +158,39 @@ describe("graphRestriction", () => {
                 })
             ]
         });
+    });
+});
+
+describe('OLS hierarchy schema contract', () => {
+    test.each(['childrenOf', 'allChildrenOf'])('sends %s as the actual OLS query parameter', async field => {
+        axios.mockReset();
+        axios.mockResolvedValue(olsResponse([docForTerm('MONDO:0018177', {
+            iri: 'http://purl.obolibrary.org/obo/MONDO_0018177', obo_id: 'MONDO:0018177'
+        })]));
+        await new GraphRestriction().keywordFunction()({
+            [field]: ['http://purl.obolibrary.org/obo/MONDO_0000001'], ontologies: ['mondo']
+        }, 'MONDO:0018177');
+        const params = new URL(axios.mock.calls[0][0].url).searchParams;
+        expect(params.get(field)).toBe('http://purl.obolibrary.org/obo/MONDO_0000001');
+        expect(params.has(field === 'childrenOf' ? 'allChildrenOf' : 'childrenOf')).toBe(false);
+        expect(params.has('direct')).toBe(false);
+        expect(params.has('classes')).toBe(false);
+    });
+
+    test.each([
+        {}, {childrenOf: [], allChildrenOf: []},
+        {childrenOf: ['https://example.org/a'], allChildrenOf: ['https://example.org/b']},
+        {childrenOf: []}, {allChildrenOf: 'https://example.org/a'},
+        {childrenOf: ['']}, {allChildrenOf: [123]},
+        {allChildrenOf: ['https://example.org/a'], direct: false},
+        {allChildrenOf: ['https://example.org/a'], relations: ['part_of']},
+        {classes: ['https://example.org/a']}
+    ])('rejects malformed/unsupported filters before network use: %j', async filter => {
+        axios.mockReset();
+        const BioValidator = require('../src/core/biovalidator-core');
+        await expect(new BioValidator().validate({
+            type: 'string', graphRestriction: {ontologies: ['mondo'], ...filter}
+        }, 'MONDO:0018177')).rejects.toMatchObject({code: 'SCHEMA_COMPILATION_FAILED', status: 422});
+        expect(axios).not.toHaveBeenCalled();
     });
 });

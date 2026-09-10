@@ -7,6 +7,18 @@ stages:
   - test
   - build-containers
 
+internal-tests:
+  stage: test
+  image: node:26.7.0-bookworm-slim
+  script:
+    - npm ci
+    - npm run test:internal -- --runInBand
+    - npm audit --omit=dev --audit-level=moderate
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - when: manual
+      allow_failure: false
+
 docker-build:
   stage: build-containers
   image: docker:24.0.9-cli
@@ -46,6 +58,7 @@ docker-build:
     - echo "$CI_REGISTRY_PASSWORD" | docker login dockerhub.ebi.ac.uk -u "$CI_REGISTRY_USER" --password-stdin
     - docker push "$IMAGE:$TAG_IMMUTABLE"
     - docker push "$IMAGE:$TAG_BRANCH"
+    - DEPLOY_IMAGE="$IMAGE:$TAG_IMMUTABLE" sh scripts/ci/render-deployment.sh > deployment-immutable.yaml
 
     # Add the global :latest tag only for the default branch (main):
     - |
@@ -54,13 +67,17 @@ docker-build:
         docker push "$IMAGE:latest"
       fi
 
+  artifacts:
+    paths:
+      - deployment-immutable.yaml
+
   after_script:
     - docker logout dockerhub.ebi.ac.uk || true
 
   rules:
-    # Run always for the default branch (main):
+    # Publish the default branch only after successful earlier stages:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-      when: always
+      when: on_success
 
     # For all other branches, run only when explicitly asked:
     - when: manual

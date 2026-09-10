@@ -115,9 +115,12 @@ class IsValidIdentifier {
                         payload.resolvedResources.every((resource) => resource && typeof resource === "object" &&
                             !Array.isArray(resource) && typeof resource.compactIdentifierResolvedUrl === "string" &&
                             resource.compactIdentifierResolvedUrl.length > 0);
-                    if (validResources) {
-                        cacheableResponse = true;
+                    if (!validResources) {
+                        throw new SecurityLimitError("identifiers.org returned an invalid response; validation could not complete.", {
+                            code: "UPSTREAM_RESPONSE_INVALID", status: 502
+                        });
                     }
+                    cacheableResponse = true;
                     if (cacheableResponse && payload.resolvedResources.length > 0) {
                         const resolvedUrl = payload.resolvedResources[0].compactIdentifierResolvedUrl;
                         logger.debug(`Returning resolved term: ${identifier} -> ${resolvedUrl}`);
@@ -130,7 +133,9 @@ class IsValidIdentifier {
                     } else if (error.response && error.response.status === 400) {
                         errors.push(generateErrorObject(`Failed to resolve term from identifiers.org. [${error.response.data.errorMessage}]`));
                     } else {
-                        errors.push(generateErrorObject(`Failed to resolve term from identifiers.org. [${error}]`));
+                        fatalError = new SecurityLimitError("identifiers.org is unavailable; retry validation later.", {
+                            code: "UPSTREAM_UNAVAILABLE", status: 502
+                        });
                     }
                 }).finally(() => {
                     if (cacheableResponse && typeof this.httpClient.commitCache === "function") {

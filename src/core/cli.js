@@ -10,26 +10,16 @@ class BioValidatorCli {
         this.biovalidator = new BioValidator(pathToRefSchema);
     }
 
-    validate() {
+    async validate() {
         try {
             this.schema = readJsonFile(this.pathToSchema);
-            this.data =  readJsonFile(this.pathToJson)
-        } catch (err) {
-            logger.error("Both schema and data files are required for validation");
-            process.exit(1)
-        }
-
-        if (this.schema && this.data) {
-            this.biovalidator.validate(this.schema, this.data).then((output) => {
-                logger.log("silly", "Sent validation results.");
-                this.process_output(output);
-            }).catch((error) => {
-                console.error("console error: " + error);
-                logger.log("error", error);
-            });
-        } else {
-            let appError = "Something is missing, both schema and object are required to execute validation.";
-            log_error(appError);
+            this.data = readJsonFile(this.pathToJson);
+            const output = await this.biovalidator.validate(this.schema, this.data);
+            this.process_output(output);
+            return output.length === 0 ? 0 : 1;
+        } catch (error) {
+            log_error(error.message || String(error));
+            return 2;
         }
     }
 

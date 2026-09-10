@@ -1,50 +1,25 @@
-const {format} = require("winston");
 const winston = require("winston");
-const {printf, combine, timestamp} = format;
 require("winston-daily-rotate-file");
-
-logDir = process.env.BIOVALIDATOR_LOG_DIR || "logs";
-
-const options = {
-    console: {
-        level: "debug",
-        json: false,
-        colorize: true
-    },
-    rotate: {
-        level: "info",
-        filename: "json-schema-validator-%DATE%.log",
-        datePattern: "YYYYMMDD",
-        zippedArchive: true,
-        dirname: this.logPath,
-        maxSize: "20m",
-        maxFiles: "14d"
-    }
-};
-
-const dateFormat = printf((info) => {
-    return `${info.timestamp} [${info.level}] ${info.message}`;
-});
-
-const transportsArray = [
-    new winston.transports.Console(options.console)
-]
-
+const {parsePositiveInteger} = require("./security-config");
 const logger = winston.createLogger({
-    format: combine(
-        timestamp(),
-        dateFormat
-    ),
-    transports: transportsArray,
-    exitOnError: false,
+    level: process.env.BIOVALIDATOR_LOG_LEVEL || "info",
+    format: winston.format.combine(winston.format.timestamp(), winston.format.json()),
+    transports: [new winston.transports.Console()],
+    exitOnError: false
 });
 
 function addLogDirectory(logDirectory) {
-    logger.add(new winston.transports.DailyRotateFile({
-        filename: 'biovalidator.log',
+    if (process.env.BIOVALIDATOR_FILE_LOG_ENABLED === "false") return;
+    const transport = new winston.transports.DailyRotateFile({
+        filename: "biovalidator-%DATE%.log",
         dirname: logDirectory,
-        datePattern: 'YYYY-MM-DD-HH'
-    }));
+        datePattern: "YYYY-MM-DD",
+        maxSize: parsePositiveInteger(process.env, "BIOVALIDATOR_LOG_MAX_BYTES", 20 * 1024 * 1024),
+        maxFiles: parsePositiveInteger(process.env, "BIOVALIDATOR_LOG_MAX_FILES", 14),
+        zippedArchive: true
+    });
+    transport.on("error", error => process.stderr.write(`File logging failed: ${error.message}\n`));
+    logger.add(transport);
+    return transport;
 }
-
 module.exports = {logger, addLogDirectory};

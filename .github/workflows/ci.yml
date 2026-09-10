@@ -73,7 +73,7 @@ jobs:
           node-version: '24'
 
       - name: Audit npm dependencies
-        run: npm audit --omit=dev --audit-level=high
+        run: npm audit --omit=dev --audit-level=moderate
 
   container:
     name: Build and smoke-check container
