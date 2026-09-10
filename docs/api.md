@@ -10,6 +10,7 @@ The default base URL is `http://localhost:3020/`. `BIOVALIDATOR_BASE_URL` may ad
 | `GET` | `/examples` | FEGA examples; `refresh=true` fetches a replacement, warms successful outbound responses, and swaps it into the cache only after success. |
 | `GET` | `/cache` | Registered schema IDs, schema/raw-content cache metrics, and API-response cache metrics. |
 | `DELETE` | `/cache` | Clear `all`, `schemas`, or `api` caches using the optional `scope` query parameter. The default is `all`. |
+| `GET` | `/ready` | Readiness: `200` when available, `503` while draining or after a worker failure. |
 | `GET` | `/health` | Process-local liveness, validation counters, and cache metrics. |
 
 `GET /examples` reads minimal valid example wrappers from the
@@ -73,9 +74,8 @@ example responses, while `scope=api` clears upstream API responses including
 the GitHub tree. Registered local schemas remain available because they are
 server configuration rather than cache entries.
 
-The cache endpoints are enabled by default for local operational visibility. Set
-`BIOVALIDATOR_CACHE_ENDPOINT_ENABLED=false` at process startup to leave both
-`GET /cache` and `DELETE /cache` unregistered; requests then receive `404`.
+Cache administration is disabled by default (`404`). Enable both routes only for
+protected operational access with `BIOVALIDATOR_CACHE_ENDPOINT_ENABLED=true`.
 
 ## Health
 
@@ -104,3 +104,16 @@ The cache endpoints are enabled by default for local operational visibility. Set
 Schema, remote-content, and API-response cache entries use the `BIOVALIDATOR_CACHE_TTL_SECONDS` setting, which defaults to 21,600 seconds (6 hours). The effective value appears in the relevant `ttl_seconds` fields. Configuration is read at process startup. The assembled FEGA examples payload uses the separate `FEGA_EXAMPLES_CACHE_TTL_SECONDS` setting, and forced refreshes are rate limited by `BIOVALIDATOR_EXAMPLES_REFRESH_MIN_INTERVAL_MS`.
 
 Implementation-level details are documented in [`server.js`](../src/core/server.js), [`biovalidator-core.js`](../src/core/biovalidator-core.js), [`secure-http-client.js`](../src/utils/secure-http-client.js), [`fega_examples_client.js`](../src/utils/fega_examples_client.js), and [`cache-metrics.js`](../src/utils/cache-metrics.js).
+
+
+## Validation failure categories
+
+Invalid data returns `200` with a non-empty error array. An invalid schema returns `422` with `SCHEMA_COMPILATION_FAILED`. Upstream unavailability or malformed provider responses return `502`; outbound deadlines return `504`. Those service errors do not mean the submitted data is invalid.
+
+For `graphRestriction`, provide exactly one parent-term array: `childrenOf` or `allChildrenOf`. The selected name is sent unchanged to OLS after expanding parent CURIEs to IRIs. `classes`, `direct`, and `relations` are rejected as invalid schema options (`422`, `SCHEMA_COMPILATION_FAILED`); OLS search does not expose arbitrary relation selection. See the [OLS search parameter documentation](https://www.ebi.ac.uk/ols4/ols3help). Boolean keywords accept both actual booleans and their legacy string forms; `false` and `"false"` disable the check.
+
+Draft-06/07 schemas use a legacy context; 2019-09 and 2020-12 use separate contexts. A remote root reference without `$schema` selects the referenced document's declared draft. Remote boolean schemas are supported. Schema-side linting remains recommended; optional strict annotation configuration is documented in [security controls](security.md).
+
+The CLI exits `0` for valid data, `1` for invalid data, and `2` when validation could not run (including file or schema errors). JSON values `false`, `0`, `null`, and the empty string are valid inputs and are checked normally.
+
+Browser verdicts are cleared after edits; results from an older input version are ignored. Visiting a configured URL prefix without a trailing slash redirects to the correct UI path.

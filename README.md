@@ -15,13 +15,15 @@ The biovalidator currently supports JSON Schema draft-06/07/2019-09/2020-12.
 > [!NOTE]
 > This repository is an independently maintained fork of the original [ELIXIR Biovalidator](https://github.com/elixir-europe/biovalidator).
 
+> **Transparency disclaimer**: AI tools were used to assist in the writing and review of this repository. Yes, everyone uses them. Yes, we do too. But at least we say so.
+
 <br clear="right">
 
 ## Breaking changes in recent releases
 - graphRestrictions
   - `graph_restriction` renamed to `graphRestriction` to be consistent with other keywords
   - Remove unused `relations` keyword inside `graphRestrictions`
-  - Remove unused `direct` keyword inside `graphRestrictions`
+  - Use `childrenOf` or `allChildrenOf` parent-term arrays instead of `classes` and `direct`
   - Rename `include_self` to `includeSelf` keyword inside `graphRestrictions` to be consistent with camel case naming convention
 - Merged `validator-cli.js` with `src/server.js`. Now one entry point to the application: `src/biovalidator.js`
 - Changes to arguments accepted at the startup
@@ -185,7 +187,7 @@ Where *errors* is an array of error messages for a given input identified by its
 There may be one or more error objects within the response array. An empty array represents a valid validation result.
 
 ### Changing the logging directory
-By default, biovalidator will log to the console and `./log` directory. Log files are daily rotated. 
+By default, biovalidator logs to the console and `./logs` directory. Files rotate daily or at 20 MiB, with 14 files retained. The container uses stdout only.
 You can change the default logging directory by specifying an environment variable `BIOVALIDATOR_LOG_DIR`. 
 Example in linux environment:
 ```shell
@@ -195,10 +197,9 @@ export BIOVALIDATOR_LOG_DIR=./new_log_dir
 ### Interacting with biovalidator cache
 Biovalidator uses strict server behavior for API and remote-schema requests. It caches compiled validators, remotely referenced schemas, and responses from external APIs. API response pages are held in one bounded cache shared across users and validation workers; they are not recreated per request. `GET /cache` reports schema inventories, canonical API provider metrics, bounded remote-content metrics, and remote URL keys without exposing API query keys or cached bodies. `DELETE /cache` clears transient entries and accepts `scope=schemas`, `scope=api`, or `scope=all` (the default). It also invalidates the assembled FEGA examples payload, preventing a later request from returning data whose outbound responses were deleted. Local schemas registered with `--ref` are configuration and are not removed.
 
-The cache endpoints remain enabled by default. Set
-`BIOVALIDATOR_CACHE_ENDPOINT_ENABLED=false` to make both cache routes return
-`404` while keeping `/health` available. Public deployments should disable the
-cache endpoints unless they are intentionally exposed.
+Cache administration is disabled by default. Set
+`BIOVALIDATOR_CACHE_ENDPOINT_ENABLED=true` only for protected operational access.
+`/health` remains public; `/ready` reports whether the instance can accept work.
 
 Transient schema and validation API cache entries expire after six hours by default. Set `BIOVALIDATOR_CACHE_TTL_SECONDS` to a positive whole number of seconds to change the lifetime. The setting is read at process startup, so changing it requires a restart. For example, use `3600` for one hour or `86400` for one day. The FEGA examples cache has its own `FEGA_EXAMPLES_CACHE_TTL_SECONDS` setting.
 
@@ -298,7 +299,7 @@ The biovalidator supports four extended keywords for ontology and taxonomy valid
 Ontology terms are looked up using the [OLS4 search API](https://www.ebi.ac.uk/ols4/api/search). If OLS4 is unavailable, validation fails with a service error rather than reporting the term as invalid.
 
 ### graphRestriction
-`graphRestriction` checks whether an ontology term is a child of one of the parent terms in `classes`. It requires one or more parent terms and ontology IDs. Ontology IDs are case-sensitive and are usually lower case.
+`graphRestriction` filters ontology terms using OLS search parameters. Supply exactly one non-empty parent-term array: `childrenOf` or `allChildrenOf`, together with `ontologies`. Parent terms may be IRIs or CURIEs. `allChildrenOf` includes hierarchical/transitive relations such as part-of and develops-from; use the [OLS parameter contract](https://www.ebi.ac.uk/ols4/ols3help) when choosing the filter. `classes`, `direct`, and `relations` are not accepted. Ontology IDs are case-sensitive and are usually lower case.
 
 `queryFields` is optional. By default, terms are matched against `obo_id`, for example `UBERON:0000955`. Use `["label"]` to validate labels, or `["obo_id", "label"]` to accept either. Matching is exact and case-sensitive.
 
@@ -316,7 +317,7 @@ Schema:
             "type": "string",
             "graphRestriction":  {
                 "ontologies" : ["obo:hcao", "obo:uberon"],
-                "classes": ["UBERON:0000062","UBERON:0000179"],
+                "allChildrenOf": ["UBERON:0000062","UBERON:0000179"],
                 "includeSelf": false
             }
         }
@@ -515,3 +516,14 @@ This fork is currently maintained by [Marcos Casado Barbero](https://orcid.org/0
 
 ## License
 For more details about licensing see the [LICENSE](LICENSE.md).
+
+
+## Deployment
+
+See [runtime controls](docs/security.md) for adjustable request rates, connections, workers, memory, results, annotations, and logs.
+
+Our deployments continue following `:main` until it is in production, where we will deploy commit-specific images. CI also publishes a commit-specific image and produces `deployment-immutable.yaml` as an artifact. Apply that generated manifest when an exact build is needed. To render one locally:
+
+```sh
+DEPLOY_IMAGE=your-registry/biovalidator:main-COMMIT sh scripts/ci/render-deployment.sh > /tmp/deployment-immutable.yaml
+```

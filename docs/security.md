@@ -18,7 +18,7 @@ Use repeatable `--remoteRef URL` arguments to fetch and compile important allowl
 
 ## Cache endpoint exposure
 
-`GET /cache` exposes schema identifiers, remote-content URL inventory, and aggregate API-cache metadata (counts, weights, TTLs, and lifecycle timestamps). It does not expose API query URLs or cached response bodies. `DELETE /cache` changes transient cache state for the server instance: `scope=api` clears API responses, `scope=schemas` clears referenced schemas and raw FEGA files, and `scope=all` clears both. Every scope also invalidates the assembled FEGA examples payload. The routes are enabled by default for local operational visibility. Public deployments should either hide these behind authorisation or set `BIOVALIDATOR_CACHE_ENDPOINT_ENABLED=false`. Disabling them removes both routes while keeping `/health` available.
+`GET /cache` exposes schema identifiers, remote-content URL inventory, and aggregate API-cache metadata (counts, weights, TTLs, and lifecycle timestamps). It does not expose API query URLs or cached response bodies. `DELETE /cache` changes transient cache state for the server instance: `scope=api` clears API responses, `scope=schemas` clears referenced schemas and raw FEGA files, and `scope=all` clears both. Every scope also invalidates the assembled FEGA examples payload. The routes are disabled by default. Set `BIOVALIDATOR_CACHE_ENDPOINT_ENABLED=true` only for local/private operational access, or protect them with authorisation at your proxy. Disabling them removes both routes while keeping `/health` available.
 
 ## Default limits
 
@@ -33,7 +33,7 @@ Use repeatable `--remoteRef URL` arguments to fetch and compile important allowl
 | `BIOVALIDATOR_OUTBOUND_TIMEOUT_MS` | 20,000 | One outbound request. |
 | `BIOVALIDATOR_VALIDATION_TIMEOUT_MS` | 60,000 | One validation running in a worker. |
 | `BIOVALIDATOR_QUEUE_TIMEOUT_MS` | 10,000 | Maximum wait for a validation worker. |
-| `BIOVALIDATOR_WORKERS` | available CPU parallelism | Maximum lazily created validation workers. |
+| `BIOVALIDATOR_WORKERS` | up to 2, limited by available CPU parallelism | Maximum lazily created validation workers. |
 | `BIOVALIDATOR_QUEUE_PER_WORKER` | 2 | Bounded queued validations per configured worker. |
 | `BIOVALIDATOR_OUTBOUND_CONCURRENCY` | 16 | Concurrent upstream requests. |
 | `BIOVALIDATOR_API_RESPONSE_MAX_BYTES` | 8 MiB | One OLS, ENA, or identifiers.org response page. |
@@ -78,5 +78,36 @@ Typical status codes are `413` for an oversized request body, `422` for a schema
 
 ## Deployment notes
 
-- We still don't have an ingress/reverse-proxy connection and request-rate policy in front of a public server deployment. Application worker and queue bounds protect validation capacity, but they do not replace edge rate limiting. In other words, people can still abuse the public servers in other ways.
+- Application rate limits run before body parsing and are per client IP, per server process. For multiple replicas, configure shared edge quotas as needed; the effective allowance otherwise scales with replicas. Restrict direct access to the backend when trusting a proxy.
 - Disable `/cache` on public deployments unless its operational inventory and cache-clearing action are intentionally exposed.
+
+
+## Additional runtime controls
+
+Settings are read at startup; restart the process after changing them. No code changes are required.
+
+| Environment variable | Default | Purpose |
+| --- | --- | --- |
+| `BIOVALIDATOR_RATE_LIMIT_ENABLED` | `true` | Enable per-client request throttling; excludes health/readiness. |
+| `BIOVALIDATOR_RATE_LIMIT_WINDOW_MS` | `60000` | Rate-limit window in milliseconds. |
+| `BIOVALIDATOR_RATE_LIMIT_MAX` | `60` | Requests allowed per client per window per process. |
+| `BIOVALIDATOR_TRUST_PROXY` | unset | Comma-separated trusted proxy IPs/CIDRs, e.g. your ingress subnet. Never trust arbitrary forwarded headers. |
+| `BIOVALIDATOR_MAX_CONNECTIONS` | `256` | Open HTTP connections per process. |
+| `BIOVALIDATOR_REQUEST_TIMEOUT_MS` | `30000` | Time allowed to receive an HTTP request, separate from validation execution. |
+| `BIOVALIDATOR_WORKER_HEAP_MB` | `256` | Maximum old-generation JavaScript heap per worker. |
+| `BIOVALIDATOR_VALIDATION_MAX_ERRORS` | `1000` | Reject larger error lists with `VALIDATION_ERROR_LIMIT`. |
+| `BIOVALIDATOR_VALIDATION_RESULT_MAX_BYTES` | `1048576` | Reject oversized result payloads before sending them to the parent process. |
+| `BIOVALIDATOR_SCHEMA_STRICT` | `false` | Opt in to Ajv strict schema-keyword checking. |
+| `BIOVALIDATOR_ANNOTATION_KEYWORDS` | `meta:enum,meta:version` | Complete comma-separated list of allowed annotation-only keywords when using strict checking. |
+| `BIOVALIDATOR_LOG_LEVEL` | `info` | Console/file log level. |
+| `BIOVALIDATOR_FILE_LOG_ENABLED` | `true`, `false` in the container | Enable local rotated files in addition to stdout. |
+| `BIOVALIDATOR_LOG_MAX_BYTES` | `20971520` | Rotate a log file at this size. |
+| `BIOVALIDATOR_LOG_MAX_FILES` | `14` | Retain at most this many rotated files. |
+
+Worker heap limits do not bound all native allocations or the entire process. Keep the container memory limit and size workers/cache budgets together. The validator still collects all errors for useful diagnostics; worker execution/heap bounds contain that work, and result limits reject overly large reports rather than truncating them into misleading success.
+
+Strict schema checking remains opt-in for FEGA deployments relying on schema-side linting. Set the full annotation list before enabling it; listed annotations carry no validation semantics. Do not add a misspelled validation keyword to suppress an error. Other Ajv strict options that restrict valid JSON Schema constructs remain disabled.
+
+Compiled validators use least-recently-used eviction instead of refusing new schemas. Ajv releases transient root references after compilation; only the bounded application cache retains those validators. Routing history is also bounded.
+
+`/health` intentionally retains public schema URL inventories. Neither it nor `/cache` exposes API query URLs or cached response bodies. Do not use schema URLs containing secrets.

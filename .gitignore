@@ -9,3 +9,4 @@ server.pid
 *-audit.json
 .vscode/
 tmp/
+deploy/
