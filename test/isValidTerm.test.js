@@ -68,14 +68,15 @@ describe("isValidTerm", () => {
         expect(errors[0].errors[0]).toContain("provided term does not exist in OLS");
     });
 
-    test("rejects OLS outages as operational AppErrors", async () => {
+    test("rejects OLS outages as operational errors", async () => {
         axios.mockRejectedValue(new Error("connect ETIMEDOUT"));
 
         const validator = new BioValidator();
         await expect(validator.validate(schema, {
             term: "http://purl.obolibrary.org/obo/PATO_0001894"
         })).rejects.toMatchObject({
-            error: expect.stringContaining(
+            status: 502,
+            message: expect.stringContaining(
                 "OLS search failed for [http://purl.obolibrary.org/obo/PATO_0001894]: connect ETIMEDOUT"
             )
         });

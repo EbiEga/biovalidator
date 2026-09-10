@@ -1,3 +1,4 @@
+import {ValidationState} from "./validation-state.mjs";
 import {EditorState} from "@codemirror/state";
 import {
   EditorView,
@@ -22,6 +23,7 @@ import {lintGutter, linter, lintKeymap} from "@codemirror/lint";
 import {json, jsonParseLinter} from "@codemirror/lang-json";
 
 const editors = {};
+const validationState = new ValidationState();
 const validateButton = document.getElementById("validate");
 const validResult = document.getElementById("valid");
 const failedResult = document.getElementById("failed");
@@ -135,7 +137,7 @@ function setEditorStatus(editor, state, message) {
 }
 
 function updateValidateButton() {
-  const ready = editors.schema && editors.data && editors.schema.valid && editors.data.valid;
+  const ready = !validationState.pending && editors.schema && editors.data && editors.schema.valid && editors.data.valid;
   setButtonState(validateButton, {
     disabled: !ready,
     tooltip: ready
@@ -201,6 +203,10 @@ function createJsonEditor(name) {
       ...(cspNonce ? [EditorView.cspNonce.of(cspNonce)] : []),
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
+          validationState.invalidate();
+          validateButton.textContent = "Validate";
+          setValidationResult(null);
+          if (resultView) setResultPayload(null);
           textarea.value = update.state.doc.toString();
           const state = textarea.value.trim() ? "checking" : "empty";
           const message = state === "checking" ? "Checking JSON syntax…" : "JSON is required.";
@@ -341,6 +347,7 @@ async function validateDocuments() {
     return;
   }
 
+  const requestId = validationState.begin();
   setButtonState(validateButton, {disabled: true, tooltip: "Validation is in progress."});
   validateButton.textContent = "Validating…";
   try {
@@ -353,6 +360,7 @@ async function validateDocuments() {
     if (!response.ok) {
       throw responseError(payload);
     }
+    if (!validationState.isCurrent(requestId)) return;
     const validationErrors = payload;
     if (validationErrors.length === 0) {
       setValidationResult("valid");
@@ -361,11 +369,14 @@ async function validateDocuments() {
       setResultPayload(validationErrors);
     }
   } catch (error) {
+    if (!validationState.isCurrent(requestId)) return;
     setValidationResult("invalid");
     setResultPayload(error.payload || {error: error.message || "Validation request failed."});
   } finally {
-    validateButton.textContent = "Validate";
-    updateValidateButton();
+    if (validationState.finish(requestId)) {
+      validateButton.textContent = "Validate";
+      updateValidateButton();
+    }
   }
 }
 

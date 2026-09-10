@@ -41,7 +41,7 @@ class IsValidTerm {
 
     generateKeywordFunction() {
         return async (schema, data) => {
-            if (!schema) {
+            if (schema === false || schema === "false") {
                 logger.warn(`Trying to work with empty schema. Why are we here : [${schema}]`);
                 return true;
             }

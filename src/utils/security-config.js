@@ -46,6 +46,12 @@ function parsePositiveInteger(environment, name, fallback) {
     return parsed;
 }
 
+function parseBoolean(environment, name, fallback) {
+    if (environment[name] === undefined) return fallback;
+    if (!["true", "false"].includes(environment[name])) throw new Error(`Invalid ${name}: expected true or false.`);
+    return environment[name] === "true";
+}
+
 function normalizeAllowedPrefix(value) {
     let parsed;
     try {
@@ -85,11 +91,22 @@ function defaultWorkerCount() {
     const parallelism = typeof os.availableParallelism === "function"
         ? os.availableParallelism()
         : os.cpus().length;
-    return Math.max(1, parallelism || 1);
+    return Math.max(1, Math.min(2, parallelism || 1));
 }
 
 function loadSecurityConfig(environment = process.env) {
     const config = {
+        maxConnections: parsePositiveInteger(environment, "BIOVALIDATOR_MAX_CONNECTIONS", 256),
+        requestTimeoutMs: parsePositiveInteger(environment, "BIOVALIDATOR_REQUEST_TIMEOUT_MS", 30_000),
+        schemaStrict: parseBoolean(environment, "BIOVALIDATOR_SCHEMA_STRICT", false),
+        annotationKeywords: (environment.BIOVALIDATOR_ANNOTATION_KEYWORDS || "meta:enum,meta:version")
+            .split(",").map(value => value.trim()).filter(Boolean),
+        validationMaxErrors: parsePositiveInteger(environment, "BIOVALIDATOR_VALIDATION_MAX_ERRORS", 1000),
+        validationResultMaxBytes: parsePositiveInteger(environment, "BIOVALIDATOR_VALIDATION_RESULT_MAX_BYTES", MIB),
+        workerHeapMb: parsePositiveInteger(environment, "BIOVALIDATOR_WORKER_HEAP_MB", 256),
+        rateLimitWindowMs: parsePositiveInteger(environment, "BIOVALIDATOR_RATE_LIMIT_WINDOW_MS", 60_000),
+        rateLimitMax: parsePositiveInteger(environment, "BIOVALIDATOR_RATE_LIMIT_MAX", 60),
+        rateLimitEnabled: parseBoolean(environment, "BIOVALIDATOR_RATE_LIMIT_ENABLED", true),
         requestMaxBytes: parsePositiveInteger(environment, "BIOVALIDATOR_REQUEST_MAX_BYTES", DEFAULTS.requestMaxBytes),
         remoteSchemaMaxBytes: parsePositiveInteger(environment, "BIOVALIDATOR_REMOTE_SCHEMA_MAX_BYTES", DEFAULTS.remoteSchemaMaxBytes),
         remoteSchemaTotalBytes: parsePositiveInteger(environment, "BIOVALIDATOR_REMOTE_SCHEMA_TOTAL_BYTES", DEFAULTS.remoteSchemaTotalBytes),

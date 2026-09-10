@@ -45,7 +45,7 @@ class IsValidTaxonomy {
     generateKeywordFunction() {
         return (schema, data) => {
             return new Promise((resolve, reject) => {
-                if (schema) {
+                if (schema === true || schema === "true") {
                     let errors = [];
                     let fatalError = null;
 
@@ -97,7 +97,9 @@ class IsValidTaxonomy {
                                     );
                                 }
                             } else {
-                                generateNotExistsErrorMessage();
+                                throw new SecurityLimitError("ENA returned an invalid taxonomy response; validation could not complete.", {
+                                    code: "UPSTREAM_RESPONSE_INVALID", status: 502
+                                });
                             }
 
                             function generateNotExistsErrorMessage() {
@@ -113,11 +115,9 @@ class IsValidTaxonomy {
                                 fatalError = error;
                                 return;
                             }
-                            logger.error(`Failed to resolve taxonomy. [${error.response && error.response.data && error.response.data.errorMessage ? error.response.data.errorMessage : error}]`);
-                            errors.push(new CustomAjvError(
-                                "isValidTaxonomy", "Something went wrong while validating term, try again." + (error.response && error.response.data && error.response.data.errorMessage ? error.response.data.errorMessage : ''),
-                                {keyword: "isValidTaxonomy"})
-                            );
+                            fatalError = new SecurityLimitError("ENA taxonomy is unavailable; retry validation later.", {
+                                code: "UPSTREAM_UNAVAILABLE", status: 502
+                            });
                         })
                         .finally(() => {
                             if (cacheableResponse && typeof this.httpClient.commitCache === "function") {

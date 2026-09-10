@@ -1,3 +1,6 @@
+// These tests exercise opt-in administrative routes; defaults are tested separately.
+process.env.BIOVALIDATOR_CACHE_ENDPOINT_ENABLED = "true";
+process.env.BIOVALIDATOR_RATE_LIMIT_ENABLED = "false";
 jest.mock("axios");
 
 const fs = require("fs");
@@ -665,7 +668,7 @@ describe('biovalidator server endpoints', () => {
     await disabledRequest.get('/cache').expect(404);
     await disabledRequest.delete('/cache').expect(404);
     await disabledRequest.get('/health').expect(200);
-    expect(isCacheEndpointEnabled({})).toBe(true);
+    expect(isCacheEndpointEnabled({})).toBe(false);
     expect(isCacheEndpointEnabled({BIOVALIDATOR_CACHE_ENDPOINT_ENABLED: "true"})).toBe(true);
   });
 
@@ -992,7 +995,7 @@ describe('biovalidator server shutdown', () => {
     expect(repeatedShutdown).toBe(firstShutdown);
     expect(shutdownServer.expressServer.close).toHaveBeenCalledTimes(1);
     await Promise.resolve();
-    expect(validationPool.close).toHaveBeenCalledTimes(1);
+    expect(validationPool.close).not.toHaveBeenCalled();
 
     finishHttpClose();
     await expect(firstShutdown).resolves.toBe(0);

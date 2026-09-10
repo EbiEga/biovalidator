@@ -1,16 +1,8 @@
 const BioValidatorCLI = require("../src/core/cli")
 
-test("Using wrong parameters results with error", () => {
-    const mockExit = jest.spyOn(process, 'exit').mockImplementation(() => {});
-
-    const schema = "schema/not_exists.json";
-    const json = "json/not_exists.json";
-    const cli = new BioValidatorCLI(schema, json);
-    cli.validate();
-
-    expect(mockExit).toHaveBeenCalledWith(1);
-
-    mockExit.mockRestore();
+test("Using wrong parameters returns an execution failure", async () => {
+    const cli = new BioValidatorCLI("schema/not_exists.json", "json/not_exists.json");
+    await expect(cli.validate()).resolves.toBe(2);
 });
 
 test( "Invalid JSON should result with validation error", () => {
@@ -44,14 +36,7 @@ test( "Invalid JSON should result with validation error", () => {
 
 });
 
-test("Should be able to reference schemas from a directory", () => {
-    const mockExit = jest.spyOn(process, 'exit').mockImplementation(() => {});
-
-    const schema = "test/resources/ref_test_schema.json";
-    const data = "test/resources/ref_test_valid.json";
-    const ref = "test/resources/schema_dir/*";
-    const cli = new BioValidatorCLI(schema, data, ref);
-    cli.validate();
-
-
+test("Should be able to reference schemas from a directory", async () => {
+    const cli = new BioValidatorCLI("test/resources/ref_test_schema.json", "test/resources/ref_test_valid.json", "test/resources/schema_dir/*");
+    await expect(cli.validate()).resolves.toBe(0);
 });

@@ -38,12 +38,12 @@ class GraphRestriction {
             metaSchema: {
                 type: "object",
                 additionalProperties: false,
-                required: ["classes", "ontologies"],
+                required: ["ontologies"],
+                oneOf: [{required: ["childrenOf"]}, {required: ["allChildrenOf"]}],
                 properties: {
-                    classes: {type: "array", minItems: 1, items: {type: "string", minLength: 1}},
+                    childrenOf: {type: "array", minItems: 1, items: {type: "string", minLength: 1}},
                     ontologies: {type: "array", minItems: 1, items: {type: "string", minLength: 1}},
-                    relations: {type: "array", minItems: 1, items: {type: "string", minLength: 1}},
-                    direct: {type: "boolean"},
+                    allChildrenOf: {type: "array", minItems: 1, items: {type: "string", minLength: 1}},
                     includeSelf: {type: "boolean"},
                     queryFields: {type: "array", minItems: 1, items: {enum: ["obo_id", "label"]}},
                     $comment: {type: "string"}
@@ -86,14 +86,29 @@ class GraphRestriction {
         };
 
         return async (schema, data) => {
-            const parentTerms = schema.classes;
+            for (const option of ["relations", "direct", "classes"]) {
+                if (Object.prototype.hasOwnProperty.call(schema, option)) {
+                    throw new SecurityLimitError(`graphRestriction.${option} is not supported by the OLS search API. Use childrenOf or allChildrenOf containing the parent terms; OLS search chooses its hierarchy relations.`, {
+                        code: "GRAPH_RESTRICTION_OPTION_UNSUPPORTED", status: 422,
+                        help: "Use exactly one of childrenOf or allChildrenOf with a non-empty parent-term array. Remove classes, direct, and relations."
+                    });
+                }
+            }
+            const hierarchyFields = ["childrenOf", "allChildrenOf"].filter(field =>
+                Object.prototype.hasOwnProperty.call(schema, field));
+            if (hierarchyFields.length !== 1) {
+                throw new SecurityLimitError("graphRestriction requires exactly one of childrenOf or allChildrenOf.", {
+                    code: "GRAPH_RESTRICTION_OPTION_UNSUPPORTED", status: 422
+                });
+            }
+            const hierarchyField = hierarchyFields[0];
+            const parentTerms = schema[hierarchyField];
             const ontologyIds = schema.ontologies;
             const queryFields = schema.queryFields || ["obo_id"];
 
             for (const [name, values] of [
-                ["classes", parentTerms],
+                [hierarchyField, parentTerms],
                 ["ontologies", ontologyIds],
-                ["relations", schema.relations],
                 ["queryFields", queryFields]
             ]) {
                 if (Array.isArray(values) && values.length > this.securityConfig.customKeywordArrayMax) {
@@ -125,10 +140,10 @@ class GraphRestriction {
                 );
             }
 
-            if (!parentTerms || !ontologyIds) {
+            if (!Array.isArray(parentTerms) || parentTerms.length === 0 || !Array.isArray(ontologyIds) || ontologyIds.length === 0) {
                 throw new ajv.ValidationError([
                     generateErrorObject(
-                        "Missing required variable in schema graphRestriction, required properties are: classes and ontologies."
+                        "Missing required variable in schema graphRestriction, required properties are: childrenOf or allChildrenOf, and ontologies (non-empty arrays)."
                     )
                 ]);
             }
@@ -152,13 +167,13 @@ class GraphRestriction {
                 if (error instanceof OlsResolutionError) {
                     throw new ajv.ValidationError([generateErrorObject(error.message)]);
                 }
-                logger.error(`OLS service failure while expanding graphRestriction classes: ${error.message || error}`);
+                logger.error(`OLS service failure while expanding graphRestriction parent terms: ${error.message || error}`);
                 throw error;
             }
 
             const parentTerm = parentIris.join(",");
             const ontologyId = ontologyIds.join(",").replace(/obo:/g, "");
-            for (const [name, value] of [["classes", parentTerm], ["ontologies", ontologyId]]) {
+            for (const [name, value] of [[hierarchyField, parentTerm], ["ontologies", ontologyId]]) {
                 if (Buffer.byteLength(value) > this.securityConfig.customKeywordStringMaxBytes) {
                     throw new SecurityLimitError(
                         `The combined graphRestriction.${name} query exceeded this Biovalidator deployment's ` +
@@ -170,7 +185,7 @@ class GraphRestriction {
 
             try {
                 await this.olsClient.resolveUniqueIri(data, queryFields, {
-                    allChildrenOf: parentTerm,
+                    [hierarchyField]: parentTerm,
                     ontology: ontologyId
                 });
                 logger.debug(`Returning resolved term from OLS: [${data}]`);
