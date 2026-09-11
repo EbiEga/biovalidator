@@ -2,6 +2,7 @@
 
 const path = require("path");
 const {Worker} = require("worker_threads");
+const {setMaxListeners} = require("events");
 const SecurityLimitError = require("../model/security-limit-error");
 const {digestJson, inspectJsonComplexity} = require("../utils/json-security");
 
@@ -46,7 +47,8 @@ class ValidationPool {
         this.outboundSequence = 0;
     }
 
-    validate(schema, data) {
+    validate(schema, data, {signal} = {}) {
+        if (signal?.aborted) return Promise.reject(new SecurityLimitError("Validation was cancelled.", {code: "VALIDATION_CANCELLED", status: 499}));
         if (this.closed) {
             return Promise.reject(new Error("Validation worker pool is closed."));
         }
@@ -76,7 +78,21 @@ class ValidationPool {
             return Promise.reject(error);
         }
         return new Promise((resolve, reject) => {
-            const job = {id: ++this.sequence, schema, data, digest, resolve, reject, queuedAt: Date.now()};
+            const controller = new AbortController();
+            // Fan-out is bounded separately; a job can legitimately have many subscribers.
+            setMaxListeners(0, controller.signal);
+            const abort = () => this._cancelJob(job, new SecurityLimitError("Validation was cancelled.", {
+                code: "VALIDATION_CANCELLED", status: 499
+            }));
+            const settle = callback => value => {
+                signal?.removeEventListener("abort", abort);
+                controller.abort();
+                callback(value);
+            };
+            const job = {id: ++this.sequence, schema, data, digest, controller,
+                resolve: settle(resolve), reject: settle(reject), queuedAt: Date.now(),
+                outboundCalls: 0, outboundBytes: 0, outboundPending: 0};
+            signal?.addEventListener("abort", abort, {once: true});
             job.queueTimer = setTimeout(() => {
                 const index = this.queue.indexOf(job);
                 const pendingSlot = this.workers.find((slot) => slot.pendingJob === job);
@@ -115,6 +131,7 @@ class ValidationPool {
     }
 
     _dispatch() {
+        clearTimeout(this.pressureTimer);
         if (this.closed || this.cacheClearPromise || this.queue.length === 0) {
             return;
         }
@@ -130,6 +147,45 @@ class ValidationPool {
             idle = idle.filter((candidate) => candidate !== slot);
             this._run(slot, job);
         }
+        this._schedulePressureRelief();
+    }
+
+    _schedulePressureRelief() {
+        if (!this.securityConfig.pressureReliefEnabled || !this.queue.length || this.closed) return;
+        const threshold = this.securityConfig.pressureTimeoutMs;
+        const candidates = this.workers.filter(slot => slot.job && slot.job.outboundPending === 0);
+        if (!candidates.length) return;
+        const oldest = candidates.reduce((a, b) => a.job.computeSince <= b.job.computeSince ? a : b);
+        const delay = Math.max(1, oldest.job.computeSince + threshold - Date.now());
+        this.pressureTimer = setTimeout(() => {
+            if (this.queue.length && oldest.job && oldest.job.outboundPending === 0 &&
+                Date.now() - oldest.job.computeSince >= threshold) {
+                this._cancelJob(oldest.job, new SecurityLimitError(
+                    "Processing limit exceeded while other requests are waiting; retry when the service is quieter.", {
+                        code: "VALIDATION_PRESSURE_LIMIT", status: 503,
+                        configuration: "BIOVALIDATOR_PRESSURE_TIMEOUT_MS"
+                    }));
+            } else this._dispatch();
+        }, delay);
+        this.pressureTimer.unref();
+    }
+
+    _cancelJob(job, error) {
+        clearTimeout(job.queueTimer);
+        clearTimeout(job.executionTimer);
+        this.queue = this.queue.filter(candidate => candidate !== job);
+        this.jobs.delete(job.id);
+        const slot = this.workers.find(candidate => candidate.job === job || candidate.pendingJob === job);
+        if (slot) {
+            slot.intentional = true;
+            this.workers = this.workers.filter(candidate => candidate !== slot);
+            this._discardStagedOutbound(slot);
+            if (slot.cacheClear) { slot.cacheClear.resolve(); slot.cacheClear = null; }
+            slot.worker.terminate();
+            this._rebuildInventory();
+        }
+        job.reject(error);
+        this._dispatch();
     }
 
     _spawnWorker() {
@@ -180,14 +236,32 @@ class ValidationPool {
         }
         if (message.type === "outbound") {
             if (!this.workers.includes(slot) || slot.intentional) return;
-            const options = {...(message.options || {})};
+            const job = slot.job;
+            if (!job || message.jobId !== job.id) return;
+            job.outboundCalls += 1;
+            if (job.outboundCalls > this.securityConfig.validationOutboundMax) {
+                this._cancelJob(job, new SecurityLimitError("Validation exceeded its outbound request budget.", {
+                    code: "VALIDATION_OUTBOUND_LIMIT", status: 422, configuration: "BIOVALIDATOR_VALIDATION_OUTBOUND_MAX"
+                }));
+                return;
+            }
+            job.outboundPending += 1;
+            const options = {...(message.options || {}), signal: job.controller.signal};
             const cacheSink = options.deferCache ? [] : undefined;
             delete options.deferCache;
             if (cacheSink) {
                 options.cacheSink = cacheSink;
             }
             this.httpClient.getJson(message.url, options).then((response) => {
-                if (!this.workers.includes(slot) || slot.intentional) return;
+                if (!this.workers.includes(slot) || slot.intentional || slot.job !== job) return;
+                job.outboundBytes += response.sizeBytes || Buffer.byteLength(JSON.stringify(response.data));
+                if (job.outboundBytes > this.securityConfig.validationOutboundMaxBytes) {
+                    this._cancelJob(job, new SecurityLimitError("Validation exceeded its outbound response byte budget.", {
+                        code: "VALIDATION_OUTBOUND_SIZE_LIMIT", status: 422,
+                        configuration: "BIOVALIDATOR_VALIDATION_OUTBOUND_MAX_BYTES"
+                    }));
+                    return;
+                }
                 const cacheTokens = (cacheSink || []).map((entry) => {
                     const token = `outbound:${++this.outboundSequence}`;
                     this.stagedOutbound.set(token, {entry, owner: slot});
@@ -195,6 +269,7 @@ class ValidationPool {
                 });
                 this._postToLiveWorker(slot, {type: "outboundResult", requestId: message.requestId, response, cacheTokens});
             }).catch((error) => {
+                if (slot.job !== job) return;
                 this._postToLiveWorker(slot, {
                     type: "outboundResult",
                     requestId: message.requestId,
@@ -208,6 +283,10 @@ class ValidationPool {
                         help: error.help
                     }
                 });
+            }).finally(() => {
+                job.outboundPending -= 1;
+                if (job.outboundPending === 0) job.computeSince = Date.now();
+                this._dispatch();
             });
             return;
         }
@@ -248,6 +327,7 @@ class ValidationPool {
                 slot.digests.delete(slot.digests.values().next().value);
             }
             this._setWorkerInventory(slot, message.inventory);
+            this._discardStagedOutbound(slot);
             if (message.error) {
                 job.reject(hydrateError(message.error));
             } else {
@@ -260,24 +340,13 @@ class ValidationPool {
     _run(slot, job) {
         clearTimeout(job.queueTimer);
         slot.job = job;
+        job.computeSince = Date.now();
         this.jobs.set(job.id, job);
         job.executionTimer = setTimeout(() => {
             if (slot.job !== job) {
                 return;
             }
-            slot.job = null;
-            this.jobs.delete(job.id);
-            slot.intentional = true;
-            this._discardStagedOutbound(slot);
-            slot.worker.terminate();
-            this.workers = this.workers.filter((candidate) => candidate !== slot);
-            if (slot.cacheClear) {
-                const resolve = slot.cacheClear.resolve;
-                slot.cacheClear = null;
-                resolve();
-            }
-            this._rebuildInventory();
-            job.reject(new SecurityLimitError(
+            this._cancelJob(job, new SecurityLimitError(
                 `This validation exceeded this Biovalidator deployment's ${this.securityConfig.validationTimeoutMs}ms deadline.`,
                 {
                     code: "VALIDATION_TIMEOUT",
@@ -416,6 +485,7 @@ class ValidationPool {
 
     async close() {
         this.closed = true;
+        clearTimeout(this.pressureTimer);
         this.stagedOutbound.clear();
         for (const job of this.queue.splice(0)) {
             clearTimeout(job.queueTimer);

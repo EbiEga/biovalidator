@@ -12,6 +12,7 @@ internal-tests:
   image: node:26.7.0-bookworm-slim
   script:
     - npm ci
+    - node scripts/ci/check-deployment.js
     - npm run test:internal -- --runInBand
     - npm audit --omit=dev --audit-level=moderate
   rules:
@@ -55,6 +56,7 @@ docker-build:
     - echo "$IMAGE:$TAG_BRANCH"
 
     - IMAGE_TAG="$IMAGE:$TAG_IMMUTABLE" ADDITIONAL_IMAGE_TAG="$IMAGE:$TAG_BRANCH" REVISION="$CI_COMMIT_SHA" sh scripts/ci/check-container.sh
+    - IMAGE_TAG="$IMAGE:$TAG_IMMUTABLE" sh scripts/ci/scan-container.sh
     - echo "$CI_REGISTRY_PASSWORD" | docker login dockerhub.ebi.ac.uk -u "$CI_REGISTRY_USER" --password-stdin
     - docker push "$IMAGE:$TAG_IMMUTABLE"
     - docker push "$IMAGE:$TAG_BRANCH"

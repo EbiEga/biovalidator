@@ -280,7 +280,7 @@ class BioValidatorServer {
       this.app.set("trust proxy", process.env.BIOVALIDATOR_TRUST_PROXY.split(",").map(value => value.trim()));
     }
     this.app.use((req, res, next) => {
-      if (this.draining && req.path !== `${this.baseUrl.replace(/\/$/, "")}/health`) {
+      if (this.draining && req.path !== `${this.baseUrl.replace(/\/$/, "")}/live`) {
         sendError(res, 503, "Server is shutting down; retry shortly.");
         return;
       }
@@ -330,10 +330,16 @@ class BioValidatorServer {
         })
       });
       this.app.use(this.baseUrl, (req, res, next) => {
-        if (["/health", "/ready"].includes(req.path)) return next();
+        if (req.method === "GET" && ["/live", "/ready"].includes(req.path)) return next();
         return limiter(req, res, next);
       });
     }
+    // Probes never parse a request body or walk caches, even if one is supplied.
+    this.app.get(`${prefix}/live`, (req, res) => sendJson(res, 200, {status: "ok"}));
+    this.app.get(`${prefix}/ready`, (req, res) => {
+      const ready = !this.draining && (!this.validationPool || this.validationPool.getDetails().ready);
+      sendJson(res, ready ? 200 : 503, {status: ready ? "ready" : "unavailable"});
+    });
     this.app.use(express.json({limit: this.securityConfig.requestMaxBytes, strict: true}));
 
     this.app.use((err, req, res, next) => {
@@ -419,7 +425,10 @@ class BioValidatorServer {
 
       if (hasSchema && hasData) {
         const executor = this.validationPool || this.biovalidator;
-        executor.validate(inputSchema, inputObject).then((output) => {
+        const controller = new AbortController();
+        const disconnect = () => { if (!res.writableEnded) controller.abort(); };
+        res.once("close", disconnect);
+        executor.validate(inputSchema, inputObject, {signal: controller.signal}).then((output) => {
           res.locals.validationResult = output.length === 0 ? "valid" : "invalid";
           res.status(200).send(output);
           logger.info("New validation request: Processed successfully in " + (new Date().getTime() - startTime) + "ms.");
@@ -431,7 +440,7 @@ class BioValidatorServer {
           } else {
             sendError(res, status, "Validation failed. See server logs for details.");
           }
-        });
+        }).finally(() => res.removeListener("close", disconnect));
       } else {
         const message = "Malformed data. Please provide both 'schema' and 'data' in request body.";
         sendError(res, 400, message);
@@ -549,11 +558,6 @@ class BioValidatorServer {
         });
       });
     }
-
-    this.router.get("/ready", (req, res) => {
-      const ready = !this.draining && (!this.validationPool || this.validationPool.getDetails().ready);
-      sendJson(res, ready ? 200 : 503, {status: ready ? "ready" : "unavailable"});
-    });
 
     this.router.get("/health", (req, res) => {
       res.status(200).send(this._getHealthDetails());

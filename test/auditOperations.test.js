@@ -41,7 +41,7 @@ test('S2: configured rate limit rejects before parsing and resets after its wind
     const rejected = await request.post('/validate').type('json').send('malformed').expect(429);
     expect(rejected.body.code).toBe('REQUEST_RATE_LIMIT');
     expect(rejected.headers['retry-after']).toBeDefined();
-    await request.get('/health').expect(200);
+    await request.get('/live').expect(200);
     await new Promise(resolve => setTimeout(resolve, 1100));
     await request.post('/validate').send({schema: {}, data: {}}).expect(200);
 });
@@ -87,9 +87,9 @@ test('P3: responses completing after worker removal are not retained', async () 
         finish = () => { options.cacheSink.push({response: {data: 'late'}}); resolve({data: {}}); };
     })};
     const pool = new Pool({securityConfig: loadSecurityConfig({}), httpClient});
-    const slot = {intentional: false};
+    const slot = {intentional: false, job: {id: 1, controller: new AbortController(), outboundCalls: 0, outboundPending: 0, outboundBytes: 0}};
     pool.workers.push(slot);
-    pool._onMessage(slot, {type: 'outbound', url: 'mock', requestId: 1, options: {deferCache: true}});
+    pool._onMessage(slot, {type: 'outbound', jobId: 1, url: 'mock', requestId: 1, options: {deferCache: true}});
     pool.workers = [];
     slot.intentional = true;
     finish();
@@ -153,12 +153,12 @@ test('D5: readiness fails on worker failure or draining while liveness remains a
     await request.get('/ready').expect(200);
     pool.lastFailureAt = Date.now();
     await request.get('/ready').expect(503);
-    await request.get('/health').expect(200);
+    await request.get('/live').expect(200);
     pool.lastFailureAt = null;
     instance.draining = true;
     await request.get('/ready').expect(503);
     await request.post('/validate').send({schema: {}, data: {}}).expect(503);
-    await request.get('/health').expect(200);
+    await request.get('/live').expect(200);
     await pool.close();
 });
 

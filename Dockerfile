@@ -1,4 +1,4 @@
-FROM node:26.8.1-bookworm-slim@sha256:367679cf9792759492a486e4aa4b421764d71a9546a6dae8aab81a99eb797b3e AS build
+FROM node:26-alpine3.22@sha256:c7932b9e5e337b0e733d6e16abc1b0e104759e8b05e59ed56586cce967d26dfe AS build
 
 WORKDIR /usr/src/app
 
@@ -12,7 +12,7 @@ COPY media ./media
 RUN npm run build:ui \
     && npm prune --omit=dev
 
-FROM node:26.8.1-bookworm-slim@sha256:367679cf9792759492a486e4aa4b421764d71a9546a6dae8aab81a99eb797b3e AS runtime
+FROM node:26-alpine3.22@sha256:c7932b9e5e337b0e733d6e16abc1b0e104759e8b05e59ed56586cce967d26dfe AS runtime
 
 ARG REVISION=unknown
 
@@ -21,6 +21,11 @@ LABEL org.opencontainers.image.source="https://github.com/EbiEga/biovalidator" \
       org.opencontainers.image.title="Biovalidator"
 
 WORKDIR /usr/src/app
+
+# Keep runtime packages current, and remove npm because it is required only by the
+# build stage and is not needed to run the production image.
+RUN apk upgrade --no-cache \
+    && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 
 COPY --from=build --chown=node:node /usr/src/app/package.json ./package.json
 COPY --from=build --chown=node:node /usr/src/app/node_modules ./node_modules

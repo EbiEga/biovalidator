@@ -7,6 +7,7 @@ const SecurityLimitError = require("../model/security-limit-error");
 class ParentHttpClient {
     constructor() {
         this.sequence = 0;
+        this.jobId = null;
         this.pending = new Map();
         parentPort.on("message", (message) => {
             if (!message || message.type !== "outboundResult") {
@@ -38,6 +39,7 @@ class ParentHttpClient {
             parentPort.postMessage({
                 type: "outbound",
                 requestId,
+                jobId: this.jobId,
                 url,
                 options: {
                     kind: options.kind,
@@ -82,9 +84,10 @@ function serializeError(error) {
     return serialized;
 }
 
+const httpClient = new ParentHttpClient();
 const validator = new BioValidator(workerData.localSchemaPath, {
     securityConfig: workerData.securityConfig,
-    httpClient: new ParentHttpClient()
+    httpClient
 });
 
 let validationInFlight = false;
@@ -111,6 +114,7 @@ parentPort.on("message", async (message) => {
         return;
     }
     validationInFlight = true;
+    httpClient.jobId = message.jobId;
     try {
         const result = await validator.validate(message.schema, message.data);
         parentPort.postMessage({
