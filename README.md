@@ -100,7 +100,8 @@ The biovalidator also exposes an endpoint for validation: [http://localhost:3020
 | `GET`, `POST` | `/validate` | View a request example or validate data against a JSON Schema. |
 | `GET` | `/examples` | Retrieve FEGA validation examples. |
 | `GET`, `DELETE` | `/cache` | Inspect schema/API cache state or clear transient caches. |
-| `GET` | `/health` | Inspect process, validation, and cache health metrics. |
+| `GET` | `/health` | Inspect rate-limited process, validation, and cache metrics. |
+| `GET` | `/live` | Lightweight liveness probe. |
 
 See the concise [HTTP API reference](docs/api.md) for response semantics and [server security controls](docs/security.md) for outbound policy, worker isolation, cache behavior, and configurable limits.
 
@@ -527,3 +528,5 @@ Our deployments continue following `:main` until it is in production, where we w
 ```sh
 DEPLOY_IMAGE=your-registry/biovalidator:main-COMMIT sh scripts/ci/render-deployment.sh > /tmp/deployment-immutable.yaml
 ```
+
+For a hardened production candidate, see [production configuration](docs/security.md#production-configuration). The Kubernetes administrator must supply and verify the ingress, TLS, network, proxy and logging settings.

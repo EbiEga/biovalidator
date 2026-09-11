@@ -14,9 +14,29 @@ spec:
         app: biovalidator
     spec:
       terminationGracePeriodSeconds: 85
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: temporary
+          emptyDir:
+            sizeLimit: 128Mi
       containers:
         - name: biovalidator
           image: "dockerhub.ebi.ac.uk/ega/biovalidator:main"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: temporary
+              mountPath: /tmp
           env:
             - name: BIOVALIDATOR_PORT
               value: "3020"
@@ -26,9 +46,11 @@ spec:
             limits:
               cpu: "1000m"
               memory: "2000Mi"
+              ephemeral-storage: "256Mi"
             requests:
               cpu: "500m"
               memory: "512Mi"
+              ephemeral-storage: "128Mi"
           imagePullPolicy: Always
           ports:
             - name: http
@@ -42,7 +64,7 @@ spec:
             failureThreshold: 3
           livenessProbe:
             httpGet:
-              path: /biovalidator/health
+              path: /biovalidator/live
               port: http
             periodSeconds: 20
             timeoutSeconds: 2

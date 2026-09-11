@@ -325,7 +325,7 @@ class BioValidator {
         const schemaId = inputSchema && typeof inputSchema === "object" ? inputSchema.$id : undefined;
         if (schemaId && ctx.registeredSchemas.has(schemaId)) {
             const wrapper = {$async: true, $ref: schemaId};
-            return ctx.ajv.compileAsync(wrapper).finally(() => ctx.ajv.removeSchema(wrapper));
+            return ctx.createCompiler().compileAsync(wrapper);
         }
         const schemaDigest = digestJson(inputSchema);
         const cacheKey = `${ctx.type}:${schemaDigest}`;
@@ -340,11 +340,9 @@ class BioValidator {
             const oldest = ctx.validatorMetadata.keys().next().value || ctx.validatorCache.keys()[0];
             ctx.validatorCache.del(oldest);
         }
-        const compiled = ctx.ajv.compileAsync(inputSchema).finally(() => {
-            // The bounded application cache owns root validators. Ajv must not retain
-            // another unbounded copy, including failed compilations and local wrappers.
-            if (inputSchema && typeof inputSchema === "object") ctx.ajv.removeSchema(inputSchema);
-        });
+        // Each compilation owns its registry, including nested IDs and anchors.
+        // Only completed/in-flight compiled validators enter the bounded cache.
+        const compiled = ctx.createCompiler().compileAsync(inputSchema);
         ctx.validatorCache.set(cacheKey, compiled);
         ctx.validatorMetadata.set(cacheKey, schemaId || `(content:${schemaDigest.slice(0, 12)})`);
         compiled.catch(() => {
@@ -495,11 +493,17 @@ class BioValidator {
         const referencedSchemaCacheMetrics = new CacheMetrics(referencedSchemaCache, CACHE_TTL_SECONDS);
         const validatorCacheMetrics = new CacheMetrics(validatorCache, CACHE_TTL_SECONDS);
 
+        for (const local of localSchemas.filter(candidate => candidate.type === type)) {
+            this._insertAsyncToSchemasAndDefs(local.schema);
+        }
         const AjvClass = type === '07' ? Ajv : (type === '2020' ? Ajv2020 : Ajv2019);
 
         // loader bound to this context's referencedSchemaCache
         const loadSchema = (uri) => {
             logger.debug(`AJV requesting schema load (context: ${type}) for URI: ${uri}`);
+            const local = localSchemas.find(candidate =>
+                candidate.schema.$id.replace(/#$/, "") === uri.replace(/#$/, ""));
+            if (local) return Promise.resolve(cloneJson(local.schema));
             // skip if it's an official meta-schema
             if (
                 uri.startsWith("http://json-schema.org/draft") ||
@@ -514,7 +518,7 @@ class BioValidator {
                 logger.debug("Returning referenced schema from reference cache: " + uri);
                 this._chargeRemoteSchemaBudget(uri,
                     referencedSchemaMetadata.get(uri)?.bytes || approximateBytes(referencedSchemaCache.get(uri)));
-                return Promise.resolve(referencedSchemaCache.get(uri));
+                return Promise.resolve(cloneJson(referencedSchemaCache.get(uri)));
             }
 
             // Check other AJV contexts' caches to avoid unnecessary network fetches
@@ -524,7 +528,7 @@ class BioValidator {
                     logger.debug(`Returning referenced schema from reference cache (context: ${ctxKey}): ${uri}`);
                     this._chargeRemoteSchemaBudget(uri,
                         otherCtx.referencedSchemaMetadata.get(uri)?.bytes || approximateBytes(otherCtx.referencedSchemaCache.get(uri)));
-                    return Promise.resolve(otherCtx.referencedSchemaCache.get(uri));
+                    return Promise.resolve(cloneJson(otherCtx.referencedSchemaCache.get(uri)));
                 }
             }
 
@@ -625,7 +629,7 @@ class BioValidator {
                             logger.debug(`Saved referenced schema to cache (context: ${targetCtx.type}): ${uri}`);
                         }
 
-                        return loadedSchema;
+                        return cloneJson(loadedSchema);
                     }).catch(err => {
                         if (err instanceof SecurityLimitError) {
                             const reference = err.reference || uri;
@@ -653,16 +657,43 @@ class BioValidator {
                     });
         };
 
-        let ajvInstance = new AjvClass({
-            allErrors: true,
-            strict: false,
-            strictSchema: this.securityConfig.schemaStrict,
-            ...(type === "07" ? {ignoreKeywordsWithRef: true} : {}),
-            loadSchema: loadSchema,
-            $data: false,
-            addUsedSchema: false,
-            ownProperties: true
-        });
+        const createCompiler = (registerLocal = false) => {
+            let ajvInstance = new AjvClass({
+                allErrors: true,
+                strict: false,
+                strictSchema: this.securityConfig.schemaStrict,
+                ...(type === "07" ? {ignoreKeywordsWithRef: true} : {}),
+                loadSchema: loadSchema,
+                $data: false,
+                addUsedSchema: false,
+                ownProperties: true
+            });
+            if (type === "07" || type === "2019") ajvInstance.addMetaSchema(draft06MetaSchema);
+            if (type === "2019") ajvInstance.addMetaSchema(draft07MetaSchema);
+            for (const keyword of this.securityConfig.annotationKeywords) {
+                if (!ajvInstance.getKeyword(keyword)) ajvInstance.addKeyword(keyword);
+            }
+
+            addFormats(ajvInstance);
+            require("ajv-errors")(ajvInstance);
+
+            // add custom keywords to this AJV instance
+            this.customKeywordValidators.forEach(customKeywordValidator => {
+                ajvInstance = customKeywordValidator.configure(ajvInstance);
+            });
+
+            for (const local of registerLocal ? localSchemas.filter(candidate => candidate.type === type) : []) {
+                try {
+                    ajvInstance.addSchema(cloneJson(local.schema), local.schema.$id);
+                } catch (error) {
+                    throw new Error(`Failed to register local reference schema '${local.file}': ${error.message}`);
+                }
+            }
+            return ajvInstance;
+        };
+        const ajvInstance = createCompiler(true);
+        const registeredSchemas = new Map(localSchemas.filter(candidate => candidate.type === type)
+            .map(local => [local.schema.$id, local.schema]));
         referencedSchemaCache.on("expired", (schemaId) => {
             const metadata = referencedSchemaMetadata.get(schemaId);
             referencedSchemaMetadata.delete(schemaId);
@@ -678,24 +709,10 @@ class BioValidator {
         });
         validatorCache.on("del", (cacheKey) => validatorMetadata.delete(cacheKey));
 
-        if (type === "07" || type === "2019") ajvInstance.addMetaSchema(draft06MetaSchema);
-        if (type === "2019") ajvInstance.addMetaSchema(draft07MetaSchema);
-        for (const keyword of this.securityConfig.annotationKeywords) {
-            if (!ajvInstance.getKeyword(keyword)) ajvInstance.addKeyword(keyword);
-        }
-
-        addFormats(ajvInstance);
-        require("ajv-errors")(ajvInstance);
-
-        // add custom keywords to this AJV instance
-        this.customKeywordValidators.forEach(customKeywordValidator => {
-            ajvInstance = customKeywordValidator.configure(ajvInstance);
-        });
-
-        const registeredSchemas = this._registerLocalSchemas(ajvInstance, localSchemas, type);
 
         return {
             ajv: ajvInstance,
+            createCompiler,
             loadSchema,
             registeredSchemas,
             referencedSchemaCache,
@@ -745,24 +762,7 @@ class BioValidator {
         return ajvInstance;
     }
 
-    /** Register local schemas without compiling them or placing them in TTL caches. */
-    _registerLocalSchemas(ajv, localSchemas, type) {
-        const registeredSchemas = new Map();
-        for (const localSchema of localSchemas.filter((candidate) => candidate.type === type)) {
-            this._insertAsyncToSchemasAndDefs(localSchema.schema);
-            try {
-                ajv.addSchema(localSchema.schema, localSchema.schema.$id);
-            } catch (error) {
-                throw new Error(
-                    `Failed to register local reference schema '${localSchema.file}' ` +
-                    `($id '${localSchema.schema.$id}') in context ${type}: ${error.message || error}`
-                );
-            }
-            registeredSchemas.set(localSchema.schema.$id, localSchema.schema);
-            logger.info(`Registered local schema '$id': ${localSchema.schema.$id} in context: ${type}`);
-        }
-        return registeredSchemas;
-    }
+
 }
 
 module.exports = BioValidator;

@@ -1,6 +1,7 @@
 "use strict";
 
 const os = require("os");
+const net = require("net");
 
 const MIB = 1024 * 1024;
 
@@ -60,10 +61,11 @@ function normalizeAllowedPrefix(value) {
         throw new Error(`Invalid BIOVALIDATOR_REMOTE_REF_ALLOWLIST entry '${value}': expected an HTTPS URL.`);
     }
     if (parsed.protocol !== "https:" || parsed.username || parsed.password ||
-        (parsed.port && parsed.port !== "443") || parsed.hostname === "") {
+        (parsed.port && parsed.port !== "443") || parsed.hostname === "" ||
+        net.isIP(parsed.hostname.replace(/^\[|\]$/g, ""))) {
         throw new Error(
             `Invalid BIOVALIDATOR_REMOTE_REF_ALLOWLIST entry '${value}': ` +
-            "only credential-free HTTPS URLs on port 443 are supported."
+            "only credential-free HTTPS hostname URLs on port 443 are supported."
         );
     }
     parsed.hash = "";
@@ -96,6 +98,11 @@ function defaultWorkerCount() {
 
 function loadSecurityConfig(environment = process.env) {
     const config = {
+        pressureReliefEnabled: parseBoolean(environment, "BIOVALIDATOR_PRESSURE_RELIEF_ENABLED", true),
+        pressureTimeoutMs: parsePositiveInteger(environment, "BIOVALIDATOR_PRESSURE_TIMEOUT_MS", 5000),
+        outboundQueueMax: parsePositiveInteger(environment, "BIOVALIDATOR_OUTBOUND_QUEUE_MAX", 256),
+        validationOutboundMax: parsePositiveInteger(environment, "BIOVALIDATOR_VALIDATION_OUTBOUND_MAX", 512),
+        validationOutboundMaxBytes: parsePositiveInteger(environment, "BIOVALIDATOR_VALIDATION_OUTBOUND_MAX_BYTES", 64 * MIB),
         maxConnections: parsePositiveInteger(environment, "BIOVALIDATOR_MAX_CONNECTIONS", 256),
         requestTimeoutMs: parsePositiveInteger(environment, "BIOVALIDATOR_REQUEST_TIMEOUT_MS", 30_000),
         schemaStrict: parseBoolean(environment, "BIOVALIDATOR_SCHEMA_STRICT", false),

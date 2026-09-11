@@ -51,6 +51,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Check deployment security policy
+        run: node scripts/ci/check-deployment.js
+
       - name: Run tests
         run: npm run test:internal --silent
         env:
@@ -93,3 +96,6 @@ jobs:
 
       - name: Build and smoke-check container
         run: npm run ci:container
+
+      - name: Scan final image for vulnerabilities and secrets
+        run: sh scripts/ci/scan-container.sh

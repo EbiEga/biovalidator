@@ -11,7 +11,8 @@ The default base URL is `http://localhost:3020/`. `BIOVALIDATOR_BASE_URL` may ad
 | `GET` | `/cache` | Registered schema IDs, schema/raw-content cache metrics, and API-response cache metrics. |
 | `DELETE` | `/cache` | Clear `all`, `schemas`, or `api` caches using the optional `scope` query parameter. The default is `all`. |
 | `GET` | `/ready` | Readiness: `200` when available, `503` while draining or after a worker failure. |
-| `GET` | `/health` | Process-local liveness, validation counters, and cache metrics. |
+| `GET` | `/health` | Rate-limited deployment details, validation counters, and cache metrics. |
+| `GET` | `/live` | Lightweight process liveness; available while draining. |
 
 `GET /examples` reads minimal valid example wrappers from the
 [`EGA-archive/fega-metadata-schema`](https://github.com/EGA-archive/fega-metadata-schema)
@@ -79,6 +80,8 @@ protected operational access with `BIOVALIDATOR_CACHE_ENDPOINT_ENABLED=true`.
 
 ## Health
 
+Use `/live` for liveness probes. Detailed `/health` metrics are subject to the normal request rate limit.
+
 `GET /health` returns `200` when the process can serve the request. It does not probe OLS, ENA Taxonomy, identifiers.org, or other upstream services. Counters and cache history reset when the process restarts and are not aggregated across replicas.
 
 | Field | Meaning |
@@ -117,3 +120,5 @@ Draft-06/07 schemas use a legacy context; 2019-09 and 2020-12 use separate conte
 The CLI exits `0` for valid data, `1` for invalid data, and `2` when validation could not run (including file or schema errors). JSON values `false`, `0`, `null`, and the empty string are valid inputs and are checked normally.
 
 Browser verdicts are cleared after edits; results from an older input version are ignored. Visiting a configured URL prefix without a trailing slash redirects to the correct UI path.
+
+Under contention, long-running computation can return `503` with `VALIDATION_PRESSURE_LIMIT`. Quiet requests retain the ordinary validation deadline. See [processing pressure controls](security.md#compilation-isolation-and-processing-pressure). Client disconnects cancel their validation work.
