@@ -1,5 +1,4 @@
-# CI workflow: runs tests on PRs to main/dev, pushes to main, or manual dispatch
-# Runs the deterministic/internal test suite to ensure code quality
+# Compatibility tests and a credential-free rehearsal of GitLab verification.
 name: CI - Run tests
 
 permissions:
@@ -7,9 +6,11 @@ permissions:
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
     branches: [main, dev]
+  schedule:
+    - cron: '0 8 * * 1'
   workflow_dispatch:
     inputs:
       ref:
@@ -59,10 +60,14 @@ jobs:
         env:
           CI: true
 
-  audit:
-    name: Audit npm dependencies
+  rehearsal:
+    name: GitLab rehearsal (${{ matrix.job }})
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        job: [internal, build]
 
     steps:
       - name: Checkout repository
@@ -74,28 +79,34 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
+          cache: npm
 
-      - name: Audit npm dependencies
-        run: npm audit --omit=dev --audit-level=moderate
+      - name: Install launcher dependencies
+        run: npm ci --ignore-scripts
 
-  container:
-    name: Build and smoke-check container
+      - name: Rehearse GitLab verification
+        run: node scripts/ci/rehearse-gitlab.js "${{ matrix.job }}"
+
+      - name: Save rehearsal logs and rendered deployment
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gitlab-rehearsal-${{ matrix.job }}
+          path: tmp/preflight/${{ matrix.job }}/
+          if-no-files-found: error
+          retention-days: 14
+
+  preflight:
+    name: Deployment preflight
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-
+    needs: [test, rehearsal]
+    if: always()
+    timeout-minutes: 5
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.ref }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24'
-
-      - name: Build and smoke-check container
-        run: npm run ci:container
-
-      - name: Scan final image for vulnerabilities and secrets
-        run: sh scripts/ci/scan-container.sh
+      - name: Require every prerequisite to succeed
+        env:
+          TEST_RESULT: ${{ needs.test.result }}
+          REHEARSAL_RESULT: ${{ needs.rehearsal.result }}
+        run: |
+          test "$TEST_RESULT" = success
+          test "$REHEARSAL_RESULT" = success

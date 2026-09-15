@@ -26,7 +26,7 @@ docker run --rm "$IMAGE_TAG" --help
 CONTAINER_ID=$(docker run -d --rm --read-only --cap-drop=ALL --security-opt=no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,size=128m --memory=2g --cpus=1 -e BIOVALIDATOR_BASE_URL=/biovalidator "$IMAGE_TAG")
 cleanup() { docker stop -t 80 "$CONTAINER_ID" >/dev/null 2>&1 || true; }
 trap cleanup 0 HUP INT TERM
-if ! docker exec -i "$CONTAINER_ID" node < scripts/ci/smoke-server.js; then
+if ! docker exec -i -e EXPECTED_REVISION="$REVISION" -e EXPECT_MINIMAL_RUNTIME=true "$CONTAINER_ID" node < scripts/ci/smoke-server.js; then
   docker logs "$CONTAINER_ID"
   exit 1
 fi

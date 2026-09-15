@@ -507,7 +507,9 @@ Before pushing changes, maintainers can run the complete local preflight:
 ```
 npm run ci:preflight
 ```
-This installs the locked dependencies, runs the deterministic test suite, builds the production Docker image, and smoke-checks its `--help` entrypoint. Docker must be available locally. GitHub CI repeats the container build and smoke check (without pushing); GitLab publishes images from protected `main` after its runner-specific Docker setup and registry login.
+Use Git, Node.js 22 or newer, and Docker with Linux containers (WSL2 on Windows). This command installs locked dependencies for the launcher, then rehearses GitLab's internal checks in its slim Node image and its build checks in a disposable Docker-in-Docker environment. It tests your current source, including uncommitted edits, without copying host dependencies or publishing images. Checks include the internal suite, dependency audit, container startup and HTTP behavior, image scanning, and rendered deployment validation.
+
+GitHub runs the same rehearsals alongside the Node 22/24/26 compatibility matrix. The aggregate **Deployment preflight** status must pass before merging once the repository ruleset is enabled. GitLab repeats verification before publishing. See [CI rehearsals and merge protection](docs/ci.md) for focused commands, artifacts, image updates, and the one-time ruleset setup.
 
 ## Credits and maintenance
 

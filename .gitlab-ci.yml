@@ -7,14 +7,15 @@ stages:
   - test
   - build-containers
 
+variables:
+  # Also used by the GitHub rehearsal and rendered-manifest validation.
+  CI_NODE_IMAGE: node:26.7.0-bookworm-slim@sha256:4db36457f406501e6f608802e5da617e5fbd0e80b75901b6a09de1ae5a667d32
+
 internal-tests:
   stage: test
-  image: node:26.7.0-bookworm-slim
+  image: $CI_NODE_IMAGE
   script:
-    - npm ci
-    - node scripts/ci/check-deployment.js
-    - npm run test:internal -- --runInBand
-    - npm audit --omit=dev --audit-level=moderate
+    - sh scripts/ci/check-internal.sh
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - when: manual
@@ -22,9 +23,9 @@ internal-tests:
 
 docker-build:
   stage: build-containers
-  image: docker:24.0.9-cli
+  image: docker:24.0.9-cli@sha256:2b62f89aaab9e4df0ff843f0d9a7bbd17340a9ba7c660ba6f40b1f00b38c2a4d
   services:
-    - name: docker:24.0.9-dind
+    - name: docker:24.0.9-dind@sha256:9b17a9f25adf17b88d0a013b4f00160754adf4b07ccbe9986664a49886c2c98e
       alias: docker
       command: ["--tls=false"]
   variables:
@@ -32,42 +33,10 @@ docker-build:
     DOCKER_TLS_CERTDIR: ""
     DOCKER_DRIVER: overlay2
   before_script:
-    - |
-      attempt=0
-      until docker info >/dev/null 2>&1; do
-        attempt=$((attempt + 1))
-        if [ "$attempt" -ge 30 ]; then
-          echo "Docker daemon did not become ready"
-          docker info
-          exit 1
-        fi
-        sleep 1
-      done
+    - sh scripts/ci/wait-docker.sh
   script:
-    - IMAGE="$CI_REGISTRY_IMAGE"
-    - BRANCH="$CI_COMMIT_REF_SLUG"
-    - SHA="$CI_COMMIT_SHORT_SHA"
-
-    - TAG_IMMUTABLE="${BRANCH}-${SHA}"
-    - TAG_BRANCH="${BRANCH}"
-
-    - echo "Building tags:"
-    - echo "$IMAGE:$TAG_IMMUTABLE"
-    - echo "$IMAGE:$TAG_BRANCH"
-
-    - IMAGE_TAG="$IMAGE:$TAG_IMMUTABLE" ADDITIONAL_IMAGE_TAG="$IMAGE:$TAG_BRANCH" REVISION="$CI_COMMIT_SHA" sh scripts/ci/check-container.sh
-    - IMAGE_TAG="$IMAGE:$TAG_IMMUTABLE" sh scripts/ci/scan-container.sh
-    - echo "$CI_REGISTRY_PASSWORD" | docker login dockerhub.ebi.ac.uk -u "$CI_REGISTRY_USER" --password-stdin
-    - docker push "$IMAGE:$TAG_IMMUTABLE"
-    - docker push "$IMAGE:$TAG_BRANCH"
-    - DEPLOY_IMAGE="$IMAGE:$TAG_IMMUTABLE" sh scripts/ci/render-deployment.sh > deployment-immutable.yaml
-
-    # Add the global :latest tag only for the default branch (main):
-    - |
-      if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then
-        docker tag "$IMAGE:$TAG_IMMUTABLE" "$IMAGE:latest"
-        docker push "$IMAGE:latest"
-      fi
+    - sh scripts/ci/verify-image.sh
+    - sh scripts/ci/publish-image.sh
 
   artifacts:
     paths:

@@ -753,35 +753,46 @@ describe('biovalidator server endpoints', () => {
     }
   });
 
-  it('GET /health falls back to process startup and the local Git revision', async () => {
+  it.each([
+    ['Git revision', () => 'abc123\n', 'abc123'],
+    ['missing Git', () => { throw Object.assign(new Error('git not found'), {code: 'ENOENT'}); }, null],
+    ['unsuccessful Git', () => { throw Object.assign(new Error('not a repository'), {status: 128}); }, null],
+    ['empty Git output', () => '\n', null]
+  ])('GET /health falls back to process startup with %s', async (_name, executeGit, revision) => {
     const originalDeployedAt = process.env.BIOVALIDATOR_DEPLOYED_AT;
     const originalRevision = process.env.BIOVALIDATOR_REVISION;
     delete process.env.BIOVALIDATOR_DEPLOYED_AT;
     delete process.env.BIOVALIDATOR_REVISION;
+    const executeFile = jest.spyOn(childProcess, 'execFileSync').mockImplementation(executeGit);
 
     try {
-      const localServer = new BioValidatorServer("3027", "");
+      const localServer = new BioValidatorServer("3027", "", {disableWorkers: true});
       localServer._configureServer()._configureEndpoints();
       const res = await supertest(localServer.app).get('/health');
       expect(res.status).toEqual(200);
       expect(res.body.deployed_at).toBe(res.body.process_started_at);
-      const currentRevision = childProcess.execFileSync('git', ['rev-parse', 'HEAD'], {
-        encoding: 'utf8'
-      }).trim();
-      expect(res.body.revision).toBe(currentRevision);
+      expect(res.body.revision).toBe(revision);
+      expect(executeFile).toHaveBeenCalledWith('git', ['rev-parse', 'HEAD'], {
+        cwd: expect.any(String), encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore']
+      });
     } finally {
+      executeFile.mockRestore();
       if (originalDeployedAt !== undefined) process.env.BIOVALIDATOR_DEPLOYED_AT = originalDeployedAt;
       if (originalRevision !== undefined) process.env.BIOVALIDATOR_REVISION = originalRevision;
     }
   });
 
-  it('deployment metadata tolerates an installation without Git metadata', () => {
+  it('explicit deployment metadata does not invoke Git', () => {
     const processStartedAt = '2026-07-03T12:00:00.000Z';
-
-    expect(resolveDeploymentMetadata(processStartedAt, {}, '/path/that/does/not/exist')).toEqual({
-      deployedAt: processStartedAt,
-      revision: null
+    const executeFile = jest.spyOn(childProcess, 'execFileSync').mockImplementation(() => {
+      throw new Error('Git must not be called');
     });
+    try {
+      expect(resolveDeploymentMetadata(processStartedAt, {
+        BIOVALIDATOR_DEPLOYED_AT: '2026-07-04T12:00:00.000Z', BIOVALIDATOR_REVISION: 'deployment123'
+      })).toEqual({deployedAt: '2026-07-04T12:00:00.000Z', revision: 'deployment123'});
+      expect(executeFile).not.toHaveBeenCalled();
+    } finally { executeFile.mockRestore(); }
   });
 
   it('normalizes runtime dependency versions', () => {
