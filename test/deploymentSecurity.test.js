@@ -53,6 +53,35 @@ test.each([
     expect(() => checkDeployment(documents, {production: true})).toThrow();
 });
 
+test.each([
+    ['Deployment selector', docs => { docs[0].spec.selector.matchLabels.app = 'wrong'; }],
+    ['Service selector', docs => { docs[1].spec.selector.app = 'wrong'; }],
+    ['Service target port', docs => { docs[1].spec.ports[0].targetPort = 9999; }],
+    ['Ingress service', docs => { docs[2].spec.rules[0].http.paths[0].backend.service.name = 'wrong'; }],
+    ['Ingress port', docs => { docs[2].spec.rules[0].http.paths[0].backend.service.port.number = 9999; }],
+    ['Ingress path', docs => { docs[2].spec.rules[0].http.paths[0].path = '/wrong'; }],
+    ['Probe path', docs => { docs[0].spec.template.spec.containers[0].readinessProbe.httpGet.path = '/ready'; }],
+    ['Probe port', docs => { docs[0].spec.template.spec.containers[0].livenessProbe.httpGet.port = 'missing'; }],
+    ['Namespace', docs => { docs[1].metadata.namespace = 'wrong'; }]
+])('deployment policy rejects broken routing: %s', (_name, mutate) => {
+    const documents = renderProduction(environment);
+    mutate(documents);
+    expect(() => checkDeployment(documents, {routing: true})).toThrow();
+});
+
+test.each(['https://registry.example/app:main', 'registry.example/app', 'registry.example/app:bad tag', 'registry.example/app@sha256:abc'])
+('deployment policy rejects malformed image %s', image => {
+    const documents = renderProduction({...environment, DEPLOY_IMAGE: image});
+    expect(() => checkDeployment(documents, {expectedImage: image})).toThrow('valid tagged image or digest');
+});
+
+test('rendered deployment must identify the image that was verified', () => {
+    const image = 'registry.example/biovalidator:main-abc123';
+    const documents = renderProduction({...environment, DEPLOY_IMAGE: image});
+    expect(() => checkDeployment(documents, {routing: true, expectedImage: image})).not.toThrow();
+    expect(() => checkDeployment(documents, {expectedImage: `${image}-different`})).toThrow('verified image');
+});
+
 test('image scanner fails the release when the scanner reports findings', () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'biovalidator-scan-test-'));
     const executable = path.join(directory, 'docker');

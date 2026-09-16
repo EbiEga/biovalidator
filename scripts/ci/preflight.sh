@@ -2,5 +2,4 @@
 set -eu
 
 npm ci
-npm test
-npm run ci:container
+node scripts/ci/rehearse-gitlab.js

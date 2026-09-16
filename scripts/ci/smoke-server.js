@@ -12,6 +12,25 @@ async function main() {
         await new Promise(resolve => setTimeout(resolve, 250));
     }
     if (!ready) throw new Error('Server did not become ready');
+    for (const endpoint of ['live', 'ready', 'health']) {
+        const response = await fetch(`${base}/${endpoint}`, {signal: AbortSignal.timeout(5000)});
+        if (!response.ok) throw new Error(`${endpoint} returned HTTP ${response.status}`);
+        if (endpoint === 'health') {
+            const health = await response.json();
+            if (process.env.EXPECTED_REVISION && health.revision !== process.env.EXPECTED_REVISION) {
+                throw new Error('Health revision does not match the supplied build revision');
+            }
+            if (process.env.EXPECT_MINIMAL_RUNTIME === 'true') {
+                if (health.dependency_versions.npm !== null) throw new Error('Runtime must work without npm');
+                const {spawnSync} = require('child_process');
+                for (const executable of ['git', 'npm']) {
+                    if (spawnSync(executable, ['--version']).error?.code !== 'ENOENT') {
+                        throw new Error(`Unexpected ${executable} executable in minimal runtime`);
+                    }
+                }
+            }
+        }
+    }
     const redirect = await fetch(base, {redirect: 'manual'});
     if (redirect.status !== 308) throw new Error('Missing base URL redirect');
     const asset = await fetch(`${base}/assets/ui.min.js`);
