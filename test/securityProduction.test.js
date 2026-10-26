@@ -236,10 +236,16 @@ test('HTTP disconnect propagates cancellation to the validation executor', async
     } finally { connection.destroy(); await new Promise(resolve => listener.close(resolve)); }
 });
 
-test.each([false, true])('forwarded addresses affect quotas only through a trusted proxy: %s', async trusted => {
+test.each([
+    ['127.0.0.1/32,::1/128', true],
+    ['::ffff:127.0.0.1/128', true],
+    ['192.0.2.0/24', false],
+    ['::ffff:10.0.0.0/8', false],
+    ['::/1', false]
+])('forwarded addresses affect quotas only through a trusted proxy: %s', async (subnet, trusted) => {
     const previous = process.env.BIOVALIDATOR_TRUST_PROXY;
     try {
-        process.env.BIOVALIDATOR_TRUST_PROXY = trusted ? '127.0.0.1/32,::1/128' : '192.0.2.0/24';
+        process.env.BIOVALIDATOR_TRUST_PROXY = subnet;
         const server = new Server(0, null, {disableWorkers: true, securityConfig: config({rateLimitMax: 1})});
         server.withLogDir(path.join(os.tmpdir(), 'biovalidator-security-tests'))._configureServer()._configureEndpoints();
         await request(server.app).get('/validate').set('X-Forwarded-For', '198.51.100.1').expect(200);
