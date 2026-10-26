@@ -9,7 +9,7 @@ stages:
 
 variables:
   # Also used by the GitHub rehearsal and rendered-manifest validation.
-  CI_NODE_IMAGE: node:26.7.0-bookworm-slim@sha256:4db36457f406501e6f608802e5da617e5fbd0e80b75901b6a09de1ae5a667d32
+  CI_NODE_IMAGE: node:26.12.1-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe
 
 internal-tests:
   stage: test
@@ -23,9 +23,9 @@ internal-tests:
 
 docker-build:
   stage: build-containers
-  image: docker:24.0.9-cli@sha256:2b62f89aaab9e4df0ff843f0d9a7bbd17340a9ba7c660ba6f40b1f00b38c2a4d
+  image: docker:29.9.2-cli@sha256:5e6baf67325a79f64ed3bed6863954d5e05d0f3d4e57cbdb14809346814bbfdb
   services:
-    - name: docker:24.0.9-dind@sha256:9b17a9f25adf17b88d0a013b4f00160754adf4b07ccbe9986664a49886c2c98e
+    - name: docker:29.9.2-dind@sha256:9e79b879b177fbd72c34376a3dd3d91747da5db49e1f560f76aea59561471977
       alias: docker
       command: ["--tls=false"]
   variables:

@@ -4,6 +4,8 @@ process.env.BIOVALIDATOR_RATE_LIMIT_ENABLED = "false";
 jest.mock("axios");
 
 const fs = require("fs");
+const http = require("http");
+const zlib = require("zlib");
 const {EventEmitter} = require("events");
 const childProcess = require("child_process");
 const npid = require("npid");
@@ -193,6 +195,45 @@ describe('biovalidator server endpoints', () => {
     expect(res.status).toBe(400);
     expect(res.body).toEqual({error: 'Received malformed JSON.'});
     expect(res.body.stack).toBeUndefined();
+  });
+
+  it.each([
+    ['gzip', zlib.gzipSync],
+    ['deflate', zlib.deflateSync],
+    ['br', zlib.brotliCompressSync]
+  ])('compressed %s bodies preserve validation and cannot crash the server with trailing bytes', async (encoding, compress) => {
+    const listener = server.app.listen(0, '127.0.0.1');
+    await new Promise(resolve => listener.once('listening', resolve));
+    const compressed = compress(Buffer.from(JSON.stringify({schema: {type: 'number'}, data: 42})));
+    const send = trailing => new Promise((resolve, reject) => {
+      const req = http.request({host: '127.0.0.1', port: listener.address().port,
+        path: '/validate', method: 'POST', headers: {
+          'Content-Type': 'application/json', 'Content-Encoding': encoding,
+          'Content-Length': compressed.length + trailing.length
+        }}, res => {
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', chunk => { body += chunk; });
+        res.on('end', () => resolve({status: res.statusCode, body}));
+        res.on('error', reject);
+      });
+      req.on('error', reject);
+      req.write(compressed);
+      // Separate writes exercise errors after the decoder has finished a frame.
+      setTimeout(() => req.end(trailing), 25);
+    });
+    try {
+      expect(await send(Buffer.alloc(0))).toEqual({status: 200, body: '[]'});
+      const malformed = await send(Buffer.from('invalid trailing compressed frame'));
+      // Decoders may reject the suffix or finish the valid first frame. Neither
+      // outcome may leave an uncaught stream error that terminates the service.
+      expect([200, 400]).toContain(malformed.status);
+      if (malformed.status === 200) expect(malformed.body).toBe('[]');
+      await new Promise(resolve => setTimeout(resolve, 50));
+      await supertest(listener).get('/live').expect(200);
+    } finally {
+      await new Promise(resolve => listener.close(resolve));
+    }
   });
 
   it('POST /validate identifies the unresolved remote $ref', async () => {

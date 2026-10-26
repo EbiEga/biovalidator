@@ -57,13 +57,13 @@ The biovalidator currently supports JSON Schema draft-06/07/2019-09/2020-12.
 ## Getting Started
 
 ### Prerequisites
-- [Node.js](https://nodejs.org/en/about/) - v22+
+- [Node.js](https://nodejs.org/en/about/) - v22.12.0 or newer
 - [npm](https://www.npmjs.com/) 
 You can also run the [biovalidator using docker](#running-in-docker) without installing node or npm. 
 
 ### Installation
 
-- Install Node.js: https://nodejs.org/en/ (v22+)
+- Install Node.js: https://nodejs.org/en/ (v22.12.0 or newer)
 - Check node and npm version
 ```shell
 node -v
@@ -507,7 +507,7 @@ Before pushing changes, maintainers can run the complete local preflight:
 ```
 npm run ci:preflight
 ```
-Use Git, Node.js 22 or newer, and Docker with Linux containers (e.g., WSL2 on Windows). This command installs locked dependencies for the launcher, then rehearses GitLab's internal checks in its slim Node image and its build checks in a disposable Docker-in-Docker environment. Note that it tests your current source (including uncommitted edits), **without** copying host dependencies or publishing images.
+Use Git, Node.js 22.12.0 or newer, and Docker with Linux containers (e.g., WSL2 on Windows). This command installs locked dependencies for the launcher, then rehearses GitLab's internal checks in its slim Node image and its build checks in a disposable Docker-in-Docker environment. Note that it tests your current source (including uncommitted edits), **without** copying host dependencies or publishing images.
 
 The aggregate **Deployment preflight** status must pass before merging. GitLab repeats verification before publishing.
 
