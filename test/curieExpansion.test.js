@@ -27,7 +27,7 @@ describe("CurieExpansion", () => {
         const requestedUrl = new URL(axios.mock.calls[0][0].url);
         expect(requestedUrl.pathname).toBe("/ols4/api/search");
         expect(requestedUrl.searchParams.get("groupField")).toBeNull();
-        expect(requestedUrl.searchParams.get("queryFields")).toBeNull();
+        expect(requestedUrl.searchParams.get("queryFields")).toBe("obo_id");
     });
 
     test("rejects a CURIE that resolves to distinct IRIs", async () => {

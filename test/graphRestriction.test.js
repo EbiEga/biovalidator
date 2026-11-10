@@ -86,8 +86,60 @@ describe("graphRestriction", () => {
         }, term)).resolves.toBe(true);
 
         const requestedUrl = new URL(axios.mock.calls[0][0].url);
-        expect(requestedUrl.searchParams.get("queryFields")).toBeNull();
+        expect(requestedUrl.searchParams.get("queryFields")).toBe(queryFields.join(","));
         expect(requestedUrl.searchParams.get("groupField")).toBeNull();
+    });
+
+    test("resolves CURIE parents and validates child ids and labels with their own fields", async () => {
+        const parent = {
+            iri: "http://purl.obolibrary.org/obo/HANCESTRO_0601",
+            obo_id: "HANCESTRO:0601",
+            label: "ethnicity category"
+        };
+        const child = {
+            iri: "http://purl.obolibrary.org/obo/HANCESTRO_0316",
+            obo_id: "HANCESTRO:0316",
+            label: "Amish"
+        };
+        axios.mockImplementation((config) => {
+            const params = new URL(config.url).searchParams;
+            const fields = (params.get("queryFields") || "label,synonym").split(",");
+            const docs = [parent, child].filter((doc) =>
+                fields.some((field) => doc[field] === params.get("q"))
+            );
+            return Promise.resolve(olsResponse(docs));
+        });
+        const graphRestriction = {
+            ontologies: ["obo:hancestro"],
+            allChildrenOf: [parent.obo_id],
+            includeSelf: false
+        };
+        const schema = {
+            type: "object",
+            properties: {
+                id: {type: "string", graphRestriction},
+                label: {type: "string", graphRestriction: {...graphRestriction, queryFields: ["label"]}}
+            }
+        };
+
+        await expect(new BioValidator().validate(schema, {
+            id: child.obo_id, label: child.label
+        })).resolves.toEqual([]);
+
+        const queries = axios.mock.calls.map(([request]) =>
+            Object.fromEntries(new URL(request.url).searchParams)
+        );
+        expect(queries).toEqual(expect.arrayContaining([
+            expect.objectContaining({q: parent.obo_id, queryFields: "obo_id"}),
+            expect.objectContaining({
+                q: child.obo_id, queryFields: "obo_id",
+                ontology: "hancestro", allChildrenOf: parent.iri
+            }),
+            expect.objectContaining({
+                q: child.label, queryFields: "label",
+                ontology: "hancestro", allChildrenOf: parent.iri
+            })
+        ]));
     });
 
     test("defaults omitted queryFields to obo_id, not label", async () => {

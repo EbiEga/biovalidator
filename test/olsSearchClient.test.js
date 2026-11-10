@@ -40,8 +40,42 @@ describe("OlsSearchClient", () => {
         expect(requestedUrl.origin + requestedUrl.pathname).toBe("https://www.ebi.ac.uk/ols4/api/search");
         expect(requestedUrl.searchParams.get("q")).toBe("BFO:0000040");
         expect(requestedUrl.searchParams.get("groupField")).toBeNull();
-        expect(requestedUrl.searchParams.get("queryFields")).toBeNull();
+        expect(requestedUrl.searchParams.get("queryFields")).toBe("obo_id");
         expect(request.timeout).toBe(20000);
+    });
+
+    test.each([
+        ["UBERON:0001062", ["obo_id"]],
+        ["http://purl.obolibrary.org/obo/UBERON_0001062", ["iri"]],
+        ["anatomical entity", ["label"]],
+        ["anatomical entity", ["obo_id", "label"]]
+    ])("resolves %s using explicit search fields %j", async (term, fields) => {
+        const doc = {
+            iri: "http://purl.obolibrary.org/obo/UBERON_0001062",
+            obo_id: "UBERON:0001062",
+            label: "anatomical entity"
+        };
+        axios.mockImplementation((config) => {
+            const params = new URL(config.url).searchParams;
+            // OLS4 exact searches default to labels and synonyms when fields are omitted.
+            const searchFields = (params.get("queryFields") || "label,synonym").split(",");
+            return Promise.resolve(olsResponse(
+                searchFields.some((field) => doc[field] === params.get("q")) ? [doc] : []
+            ));
+        });
+        const client = new OlsSearchClient(
+            "https://www.ebi.ac.uk/ols4/api/search?queryFields=short_form"
+        );
+
+        await expect(client.resolveUniqueIri(term, fields, {
+            queryFields: "synonym",
+            ontology: "uberon"
+        })).resolves.toBe(doc.iri);
+
+        const params = new URL(axios.mock.calls[0][0].url).searchParams;
+        expect(params.get("queryFields")).toBe(fields.join(","));
+        expect(params.get("exact")).toBe("true");
+        expect(params.get("ontology")).toBe("uberon");
     });
 
     test("fetches every page and caches only the completed aggregate", async () => {
@@ -67,6 +101,9 @@ describe("OlsSearchClient", () => {
         );
 
         expect(axios).toHaveBeenCalledTimes(2);
+        for (const [request] of axios.mock.calls) {
+            expect(new URL(request.url).searchParams.get("queryFields")).toBe("obo_id");
+        }
         expect(client.httpClient.apiSnapshot().entries.ols).toBe(2);
     });
 
