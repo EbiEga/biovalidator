@@ -6,7 +6,7 @@ const SecurityLimitError = require("../model/security-limit-error");
 
 const PAGE_SIZE = 500;
 const REQUEST_TIMEOUT_MS = 20000;
-const OMITTED_SERVER_FILTERS = new Set(["groupField", "queryFields"]);
+const OMITTED_SERVER_FILTERS = new Set(["groupField"]);
 
 class OlsSearchError extends Error {
     constructor(term, reason) {
@@ -88,7 +88,7 @@ class OlsSearchClient {
     }
 
     async findExactMatches(term, fields, filters = {}) {
-        const result = await this.search(term, filters);
+        const result = await this.search(term, {...filters, queryFields: fields.join(",")});
         const matches = result.docs.filter((doc) =>
             fields.some((field) => doc[field] === term)
         );
